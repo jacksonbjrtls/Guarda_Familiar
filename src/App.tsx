@@ -1,0 +1,715 @@
+import React, { useState, useEffect } from 'react';
+import { INITIAL_MEMBERS, INITIAL_ALERTS } from './data/initialData';
+import { FamilyMember, SecurityAlert, SafeZone, Coordinates, AudioSessionLog } from './types';
+import { Navigation } from './components/Navigation';
+import { FamilyMemberSelector } from './components/FamilyMemberSelector';
+import { MapTracker } from './components/MapTracker';
+import { BatteryStatusCard } from './components/BatteryStatusCard';
+import { SafeZonesManager } from './components/SafeZonesManager';
+import { LocationHistoryView } from './components/LocationHistoryView';
+import { ScreenTimeManager } from './components/ScreenTimeManager';
+import { AmbientAudioModal } from './components/AmbientAudioModal';
+import { AlertsDrawer } from './components/AlertsDrawer';
+import { MemberFormModal } from './components/MemberFormModal';
+import { ManageFamilyModal } from './components/ManageFamilyModal';
+import { QRCodePairingModal } from './components/QRCodePairingModal';
+import { ChildDeviceSimulatorModal } from './components/ChildDeviceSimulatorModal';
+import { AndroidNativeModal } from './components/AndroidNativeModal';
+import { playEmergencyAlertSound, playNotificationChime } from './utils/audio';
+import { 
+  Shield, 
+  MapPin, 
+  Battery, 
+  Hourglass, 
+  Mic, 
+  Radio, 
+  Smartphone, 
+  AlertTriangle, 
+  CheckCircle, 
+  Info,
+  Volume2
+} from 'lucide-react';
+
+export default function App() {
+  // Members State
+  const [members, setMembers] = useState<FamilyMember[]>(() => {
+    const saved = localStorage.getItem('guardiao_family_members');
+    return saved ? JSON.parse(saved) : INITIAL_MEMBERS;
+  });
+
+  const [selectedMemberId, setSelectedMemberId] = useState<string>('child-1');
+
+  // Alerts State
+  const [alerts, setAlerts] = useState<SecurityAlert[]>(() => {
+    const saved = localStorage.getItem('guardiao_security_alerts');
+    return saved ? JSON.parse(saved) : INITIAL_ALERTS;
+  });
+
+  // Navigation & UI States
+  const [activeTab, setActiveTab] = useState<'map' | 'history' | 'zones' | 'screentime'>('map');
+  const [isAudioModalOpen, setIsAudioModalOpen] = useState(false);
+  const [isAlertsOpen, setIsAlertsOpen] = useState(false);
+  const [isMemberFormOpen, setIsMemberFormOpen] = useState(false);
+  const [memberFormMode, setMemberFormMode] = useState<'add' | 'edit'>('add');
+  const [editingMember, setEditingMember] = useState<FamilyMember | null>(null);
+  const [isManageFamilyOpen, setIsManageFamilyOpen] = useState(false);
+  const [isChildSimulatorOpen, setIsChildSimulatorOpen] = useState(false);
+  const [isAndroidModalOpen, setIsAndroidModalOpen] = useState(false);
+  const [isQRPairingOpen, setIsQRPairingOpen] = useState(false);
+
+  // Map & Route selection state
+  const [selectedHistoryIndex, setSelectedHistoryIndex] = useState<number | null>(null);
+  const [showFullDayRoute, setShowFullDayRoute] = useState(false);
+
+  // Banner / Toast Feedback
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Sync with localStorage
+  useEffect(() => {
+    localStorage.setItem('guardiao_family_members', JSON.stringify(members));
+  }, [members]);
+
+  useEffect(() => {
+    localStorage.setItem('guardiao_security_alerts', JSON.stringify(alerts));
+  }, [alerts]);
+
+  // Current selected member
+  const currentMember = members.find(m => m.id === selectedMemberId) || members[0];
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  // Trigger Sound Alarm on child's device
+  const handleTriggerSoundAlert = () => {
+    playEmergencyAlertSound();
+    showToast(`Alarme de alta intensidade emitido no aparelho de ${currentMember.name.split(' ')[0]}!`);
+
+    const newAlert: SecurityAlert = {
+      id: `alert-ring-${Date.now()}`,
+      memberId: currentMember.id,
+      memberName: currentMember.name,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      dateKey: 'Hoje',
+      type: 'SOS',
+      title: 'Alarme Sonoro Remoto Acionado',
+      description: `Um alarme em volume máximo foi disparado para localizar o aparelho de ${currentMember.name.split(' ')[0]}.`,
+      severity: 'info',
+      read: false,
+    };
+    setAlerts(prev => [newAlert, ...prev]);
+  };
+
+  // Real-time location simulation update
+  const handleLocationUpdate = (coords: Coordinates, address: string, speedKmH: number) => {
+    setMembers(prevMembers =>
+      prevMembers.map(m => {
+        if (m.id !== currentMember.id) return m;
+
+        // Check if now inside or outside safe zones
+        let currentZoneName: string | undefined = undefined;
+        let isInsideAnyZone = false;
+
+        m.safeZones.forEach(zone => {
+          const R = 6371e3;
+          const φ1 = (coords.lat * Math.PI) / 180;
+          const φ2 = (zone.lat * Math.PI) / 180;
+          const Δφ = ((zone.lat - coords.lat) * Math.PI) / 180;
+          const Δλ = ((zone.lng - coords.lng) * Math.PI) / 180;
+          const a = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+          const distance = Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+
+          if (distance <= zone.radiusMeters) {
+            currentZoneName = zone.name;
+            isInsideAnyZone = true;
+          }
+        });
+
+        // Trigger Geofence alert if exited
+        if (m.currentLocation.currentZoneName && !isInsideAnyZone) {
+          const exitAlert: SecurityAlert = {
+            id: `alert-exit-${Date.now()}`,
+            memberId: m.id,
+            memberName: m.name,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            dateKey: 'Hoje',
+            type: 'GEOFENCE_EXIT',
+            title: 'Saída de Zona Segura',
+            description: `${m.name.split(' ')[0]} saiu de "${m.currentLocation.currentZoneName}". Velocidade: ${speedKmH} km/h.`,
+            severity: 'warning',
+            read: false,
+            location: coords,
+          };
+          setAlerts(prev => [exitAlert, ...prev]);
+          playNotificationChime();
+          showToast(`Aviso: ${m.name.split(' ')[0]} saiu da zona de segurança!`);
+        }
+
+        return {
+          ...m,
+          device: {
+            ...m.device,
+            batteryLevel: Math.max(12, m.device.batteryLevel - (speedKmH > 0 ? 1 : 0)),
+            lastSync: 'Agora mesmo',
+          },
+          currentLocation: {
+            ...m.currentLocation,
+            lat: coords.lat,
+            lng: coords.lng,
+            address,
+            speedKmH,
+            currentZoneName,
+            statusText: currentZoneName ? `Em "${currentZoneName}"` : `Em trânsito (${speedKmH} km/h)`,
+            lastUpdated: 'Agora mesmo',
+          },
+        };
+      })
+    );
+  };
+
+  // Add Safe Zone
+  const handleAddSafeZone = (zoneData: Omit<SafeZone, 'id'>) => {
+    const newZone: SafeZone = {
+      ...zoneData,
+      id: `zone-${Date.now()}`,
+    };
+
+    setMembers(prev =>
+      prev.map(m => (m.id === currentMember.id ? { ...m, safeZones: [...m.safeZones, newZone] } : m))
+    );
+    showToast(`Zona "${zoneData.name}" criada com sucesso.`);
+  };
+
+  // Remove Safe Zone
+  const handleRemoveSafeZone = (zoneId: string) => {
+    setMembers(prev =>
+      prev.map(m =>
+        m.id === currentMember.id
+          ? { ...m, safeZones: m.safeZones.filter(z => z.id !== zoneId) }
+          : m
+      )
+    );
+    showToast('Zona segura removida.');
+  };
+
+  // Toggle Safe Zone Entry/Exit notifications
+  const handleToggleZoneAlert = (zoneId: string, alertType: 'entry' | 'exit') => {
+    setMembers(prev =>
+      prev.map(m => {
+        if (m.id !== currentMember.id) return m;
+        return {
+          ...m,
+          safeZones: m.safeZones.map(z => {
+            if (z.id !== zoneId) return z;
+            return {
+              ...z,
+              notifyOnExit: alertType === 'exit' ? !z.notifyOnExit : z.notifyOnExit,
+              notifyOnEntry: alertType === 'entry' ? !z.notifyOnEntry : z.notifyOnEntry,
+            };
+          }),
+        };
+      })
+    );
+  };
+
+  // App Blocking & Screen Time handlers
+  const handleToggleAppBlocked = (appId: string) => {
+    setMembers(prev =>
+      prev.map(m => {
+        if (m.id !== currentMember.id) return m;
+        const app = m.apps.find(a => a.id === appId);
+        const willBeBlocked = app ? !app.isBlocked : false;
+
+        if (willBeBlocked && app) {
+          const blockAlert: SecurityAlert = {
+            id: `alert-block-${Date.now()}`,
+            memberId: m.id,
+            memberName: m.name,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            dateKey: 'Hoje',
+            type: 'APP_BLOCKED',
+            title: `Aplicativo ${app.name} Bloqueado`,
+            description: `O acesso a "${app.name}" foi bloqueado pelo responsável no celular de ${m.name.split(' ')[0]}.`,
+            severity: 'info',
+            read: false,
+          };
+          setAlerts(prevA => [blockAlert, ...prevA]);
+        }
+
+        return {
+          ...m,
+          apps: m.apps.map(a => (a.id === appId ? { ...a, isBlocked: willBeBlocked } : a)),
+        };
+      })
+    );
+    playNotificationChime();
+  };
+
+  const handleUpdateAppLimit = (appId: string, limitMinutes: number) => {
+    setMembers(prev =>
+      prev.map(m => {
+        if (m.id !== currentMember.id) return m;
+        return {
+          ...m,
+          apps: m.apps.map(a => (a.id === appId ? { ...a, dailyLimitMinutes: limitMinutes } : a)),
+        };
+      })
+    );
+    showToast('Limite diário de aplicativo atualizado.');
+  };
+
+  const handleToggleImmediateDeviceLock = () => {
+    const willBeLocked = !currentMember.device.isDeviceLocked;
+    setMembers(prev =>
+      prev.map(m => {
+        if (m.id !== currentMember.id) return m;
+        return {
+          ...m,
+          device: { ...m.device, isDeviceLocked: willBeLocked },
+        };
+      })
+    );
+
+    const alert: SecurityAlert = {
+      id: `alert-lock-${Date.now()}`,
+      memberId: currentMember.id,
+      memberName: currentMember.name,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      dateKey: 'Hoje',
+      type: 'DEVICE_LOCKED',
+      title: willBeLocked ? 'Aparelho Bloqueado Remotamente' : 'Aparelho Desbloqueado',
+      description: willBeLocked
+        ? `O celular de ${currentMember.name.split(' ')[0]} foi travado pelo responsável.`
+        : `O celular de ${currentMember.name.split(' ')[0]} foi liberado para uso.`,
+      severity: willBeLocked ? 'warning' : 'info',
+      read: false,
+    };
+    setAlerts(prev => [alert, ...prev]);
+    showToast(willBeLocked ? 'Celular bloqueado com sucesso!' : 'Celular desbloqueado!');
+  };
+
+  const handleUpdateDailyLimit = (minutes: number) => {
+    setMembers(prev =>
+      prev.map(m => {
+        if (m.id !== currentMember.id) return m;
+        return {
+          ...m,
+          screenTime: { ...m.screenTime, dailyLimitMinutes: minutes },
+        };
+      })
+    );
+    showToast(`Tempo de tela ajustado para ${Math.floor(minutes / 60)}h ${minutes % 60 ? `${minutes % 60}m` : ''}.`);
+  };
+
+  const handleToggleSchoolMode = () => {
+    setMembers(prev =>
+      prev.map(m => {
+        if (m.id !== currentMember.id) return m;
+        return {
+          ...m,
+          screenTime: { ...m.screenTime, schoolModeActive: !m.screenTime.schoolModeActive },
+        };
+      })
+    );
+    showToast('Modo Horário Escolar alterado.');
+  };
+
+  const handleToggleDowntime = () => {
+    setMembers(prev =>
+      prev.map(m => {
+        if (m.id !== currentMember.id) return m;
+        return {
+          ...m,
+          screenTime: { ...m.screenTime, downtimeActive: !m.screenTime.downtimeActive },
+        };
+      })
+    );
+    showToast('Modo Hora de Dormir alterado.');
+  };
+
+  const handleSaveAudioLog = (log: AudioSessionLog) => {
+    setMembers(prev =>
+      prev.map(m => {
+        if (m.id !== currentMember.id) return m;
+        return {
+          ...m,
+          audioLogs: [log, ...m.audioLogs],
+        };
+      })
+    );
+    showToast('Amostra de áudio ambiente registrada.');
+  };
+
+  const handleSaveMember = (memberData: FamilyMember) => {
+    const isExisting = members.some(m => m.id === memberData.id);
+    if (isExisting) {
+      setMembers(prev => prev.map(m => (m.id === memberData.id ? memberData : m)));
+      showToast(`Dados de ${memberData.name} atualizados com sucesso!`);
+    } else {
+      setMembers(prev => [...prev, memberData]);
+      setSelectedMemberId(memberData.id);
+      showToast(`${memberData.name} foi adicionado(a) à família com sucesso!`);
+    }
+  };
+
+  const handleDeleteMember = (memberId: string) => {
+    if (members.length <= 1) {
+      showToast('Atenção: A família deve conter pelo menos 1 membro.');
+      return;
+    }
+    const memberToRemove = members.find(m => m.id === memberId);
+    setMembers(prev => prev.filter(m => m.id !== memberId));
+
+    if (selectedMemberId === memberId) {
+      const remaining = members.filter(m => m.id !== memberId);
+      if (remaining.length > 0) {
+        setSelectedMemberId(remaining[0].id);
+      }
+    }
+
+    showToast(`${memberToRemove ? memberToRemove.name : 'Membro'} foi excluído(a) da família.`);
+  };
+
+  const openAddMember = () => {
+    setMemberFormMode('add');
+    setEditingMember(null);
+    setIsMemberFormOpen(true);
+  };
+
+  const openEditMember = (member: FamilyMember) => {
+    setMemberFormMode('edit');
+    setEditingMember(member);
+    setIsMemberFormOpen(true);
+  };
+
+  const openManageFamily = () => {
+    setIsManageFamilyOpen(true);
+  };
+
+  const handleMemberPairedFromQR = (newMember: FamilyMember) => {
+    setMembers(prev => [...prev, newMember]);
+    setSelectedMemberId(newMember.id);
+    setActiveTab('map');
+    showToast(`Celular de ${newMember.name} pareado e ativado com sucesso via QR Code!`);
+
+    const alert: SecurityAlert = {
+      id: `alert-qr-${Date.now()}`,
+      memberId: newMember.id,
+      memberName: newMember.name,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      dateKey: 'Hoje',
+      type: 'GEOFENCE_ENTRY',
+      title: 'Aparelho Ativado via QR Code (Zero Instalação)',
+      description: `${newMember.name} foi conectado com sucesso! Aparelho: ${newMember.device.model} (${newMember.phone || 'Sem telefone informado'}) com ${newMember.device.batteryLevel}% de bateria e GPS ativo.`,
+      severity: 'info',
+      read: false,
+      location: { lat: newMember.currentLocation.lat, lng: newMember.currentLocation.lng },
+    };
+    setAlerts(prev => [alert, ...prev]);
+  };
+
+  // SOS Emergency triggered from child phone simulator
+  const handleTriggerSOS = () => {
+    const sosAlert: SecurityAlert = {
+      id: `alert-sos-${Date.now()}`,
+      memberId: currentMember.id,
+      memberName: currentMember.name,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      dateKey: 'Hoje',
+      type: 'SOS',
+      title: '🚨 EMERGÊNCIA SOS ACIONADA!',
+      description: `${currentMember.name.split(' ')[0]} apertou o botão de emergência SOS no celular! Localização: ${currentMember.currentLocation.address}`,
+      severity: 'critical',
+      read: false,
+      location: { lat: currentMember.currentLocation.lat, lng: currentMember.currentLocation.lng },
+    };
+    setAlerts(prev => [sosAlert, ...prev]);
+    setActiveTab('map');
+    showToast(`🚨 ALERTA SOS CRÍTICO DE ${currentMember.name.toUpperCase()}!`);
+  };
+
+  // Child requests extra screen time
+  const handleRequestExtraTime = () => {
+    const requestAlert: SecurityAlert = {
+      id: `alert-time-req-${Date.now()}`,
+      memberId: currentMember.id,
+      memberName: currentMember.name,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      dateKey: 'Hoje',
+      type: 'SCREEN_TIME_LIMIT',
+      title: 'Solicitação de +15 min de Tela',
+      description: `${currentMember.name.split(' ')[0]} pediu mais 15 minutos de tempo de tela aos pais.`,
+      severity: 'info',
+      read: false,
+    };
+    setAlerts(prev => [requestAlert, ...prev]);
+    showToast(`${currentMember.name.split(' ')[0]} pediu +15 min de tempo de tela.`);
+  };
+
+  const unreadAlertsCount = alerts.filter(a => !a.read).length;
+
+  return (
+    <div className="min-h-screen bg-slate-100 sm:py-6 flex justify-center text-slate-900 font-sans">
+      {/* Smartphone Viewport Shell (Max width 440px on desktop, 100% on mobile) */}
+      <div className="w-full max-w-md min-h-screen sm:min-h-[840px] sm:max-h-[920px] bg-slate-50 flex flex-col shadow-2xl sm:rounded-3xl border-x sm:border border-slate-200/90 relative overflow-x-hidden overflow-y-auto">
+        
+        {/* Android Simulated Status Bar (Visible on desktop preview) */}
+        <div className="hidden sm:flex items-center justify-between px-5 pt-2 pb-1 text-[11px] font-mono text-slate-400 bg-white border-b border-slate-100 select-none shrink-0">
+          <span className="font-semibold text-slate-600">17:45</span>
+          <div className="w-20 h-3.5 bg-slate-100 rounded-full mx-auto" />
+          <div className="flex items-center gap-1.5 text-slate-500 font-semibold">
+            <span>5G</span>
+            <span>98%</span>
+            <Battery className="w-3.5 h-3.5" />
+          </div>
+        </div>
+
+        {/* Mobile Top App Bar */}
+        <Navigation
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          onOpenAddMember={openAddMember}
+          onOpenAlerts={() => setIsAlertsOpen(true)}
+          onOpenAudioModal={() => setIsAudioModalOpen(true)}
+          onOpenChildSimulator={() => setIsChildSimulatorOpen(true)}
+          onOpenAndroidModal={() => setIsAndroidModalOpen(true)}
+          onOpenQRPairing={() => setIsQRPairingOpen(true)}
+          unreadAlertsCount={unreadAlertsCount}
+        />
+
+        {/* Mobile Toast Banner Feedback */}
+        {toastMessage && (
+          <div className="absolute top-16 left-3 right-3 z-50 bg-slate-900/95 backdrop-blur-sm text-white text-xs font-semibold px-4 py-3 rounded-2xl shadow-xl border border-slate-700 flex items-center justify-between gap-2 animate-in fade-in slide-in-from-top-2 duration-150">
+            <div className="flex items-center gap-2 truncate">
+              <Info className="w-4 h-4 text-indigo-400 shrink-0" />
+              <span className="truncate">{toastMessage}</span>
+            </div>
+            <button onClick={() => setToastMessage(null)} className="text-slate-400 hover:text-white shrink-0 p-1">✕</button>
+          </div>
+        )}
+
+        {/* Mobile Scrollable Body Content */}
+        <main className="flex-1 px-3.5 py-3 space-y-3.5 pb-28">
+          {/* Family Member Switcher Bar (Mobile Horizontal Carousel) */}
+          <section>
+            <div className="flex items-center justify-between px-1 mb-1">
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                Família ({members.length})
+              </span>
+              <button
+                type="button"
+                onClick={openManageFamily}
+                className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800"
+              >
+                Gerenciar Membros
+              </button>
+            </div>
+
+            <FamilyMemberSelector
+              members={members}
+              selectedMemberId={selectedMemberId}
+              onSelectMember={(id) => {
+                setSelectedMemberId(id);
+                setSelectedHistoryIndex(null);
+              }}
+              onOpenAddMember={openAddMember}
+              onOpenEditMember={openEditMember}
+              onOpenManageFamily={openManageFamily}
+              onOpenQRPairing={() => setIsQRPairingOpen(true)}
+            />
+          </section>
+
+          {/* Screen 1: Live Map Tracking */}
+          {activeTab === 'map' && (
+            <div className="space-y-3.5">
+              <MapTracker
+                currentMember={currentMember}
+                onLocationUpdate={handleLocationUpdate}
+                onTriggerSoundAlert={handleTriggerSoundAlert}
+                onAddNewSafeZoneAtLocation={(lat, lng) => {
+                  handleAddSafeZone({
+                    name: `Nova Zona (${currentMember.safeZones.length + 1})`,
+                    address: 'Local demarcado no mapa',
+                    lat,
+                    lng,
+                    radiusMeters: 200,
+                    color: '#6366F1',
+                    iconType: 'family',
+                    notifyOnEntry: true,
+                    notifyOnExit: true,
+                  });
+                }}
+                selectedHistoryIndex={selectedHistoryIndex}
+                showFullDayRoute={showFullDayRoute}
+              />
+
+              {/* Status and Diagnostics Strip */}
+              <div className="p-3.5 rounded-2xl border border-slate-200 bg-white shadow-xs flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="p-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 shrink-0">
+                    <Shield className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <span className="font-bold text-slate-900 block truncate">
+                      {currentMember.currentLocation.currentZoneName
+                        ? `Zona Segura: ${currentMember.currentLocation.currentZoneName}`
+                        : 'Fora de Zona Segura'}
+                    </span>
+                    <span className="text-slate-500 text-[11px] truncate block">{currentMember.currentLocation.address}</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setIsAudioModalOpen(true)}
+                  className="px-2.5 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold flex items-center gap-1 shrink-0 text-[11px]"
+                >
+                  <Mic className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Ouvir</span>
+                </button>
+              </div>
+
+              {/* Battery and Device Diagnostics Card */}
+              <BatteryStatusCard
+                device={currentMember.device}
+                memberName={currentMember.name}
+                onTogglePowerSaving={() => {
+                  setMembers(prev =>
+                    prev.map(m =>
+                      m.id === currentMember.id
+                        ? {
+                            ...m,
+                            device: {
+                              ...m.device,
+                              powerSavingMode: !m.device.powerSavingMode,
+                            },
+                          }
+                        : m
+                    )
+                  );
+                  showToast('Modo de economia de energia alternado.');
+                }}
+                onSendBatteryReminder={() => {
+                  showToast(`Lembrete de recarga enviado para o aparelho de ${currentMember.name.split(' ')[0]}!`);
+                }}
+              />
+            </div>
+          )}
+
+          {/* Screen 2: Location History */}
+          {activeTab === 'history' && (
+            <div className="space-y-3.5">
+              <LocationHistoryView
+                currentMember={currentMember}
+                onSelectHistoryPoint={(index) => {
+                  setSelectedHistoryIndex(index);
+                  setActiveTab('map');
+                }}
+                selectedPointIndex={selectedHistoryIndex}
+                onToggleShowRoute={(show) => {
+                  setShowFullDayRoute(show);
+                  if (show) setActiveTab('map');
+                }}
+                showFullDayRoute={showFullDayRoute}
+              />
+            </div>
+          )}
+
+          {/* Screen 3: Safe Zones Manager */}
+          {activeTab === 'zones' && (
+            <div className="space-y-3.5">
+              <SafeZonesManager
+                currentMember={currentMember}
+                onAddSafeZone={handleAddSafeZone}
+                onRemoveSafeZone={handleRemoveSafeZone}
+                onToggleZoneAlert={handleToggleZoneAlert}
+              />
+            </div>
+          )}
+
+          {/* Screen 4: Screen Time & App Blocker */}
+          {activeTab === 'screentime' && (
+            <div className="space-y-3.5">
+              <ScreenTimeManager
+                currentMember={currentMember}
+                onToggleAppBlocked={handleToggleAppBlocked}
+                onUpdateAppLimit={handleUpdateAppLimit}
+                onToggleImmediateDeviceLock={handleToggleImmediateDeviceLock}
+                onUpdateDailyLimit={handleUpdateDailyLimit}
+                onToggleSchoolMode={handleToggleSchoolMode}
+                onToggleDowntime={handleToggleDowntime}
+              />
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* Modals & Drawers */}
+      <AmbientAudioModal
+        isOpen={isAudioModalOpen}
+        onClose={() => setIsAudioModalOpen(false)}
+        currentMember={currentMember}
+        onSaveAudioLog={handleSaveAudioLog}
+      />
+
+      <AlertsDrawer
+        isOpen={isAlertsOpen}
+        onClose={() => setIsAlertsOpen(false)}
+        alerts={alerts}
+        onMarkAsRead={(id) => {
+          setAlerts(prev => prev.map(a => (a.id === id ? { ...a, read: true } : a)));
+        }}
+        onMarkAllAsRead={() => {
+          setAlerts(prev => prev.map(a => ({ ...a, read: true })));
+        }}
+        onFocusAlertLocation={(lat, lng) => {
+          setActiveTab('map');
+        }}
+      />
+
+      <MemberFormModal
+        isOpen={isMemberFormOpen}
+        mode={memberFormMode}
+        initialMember={editingMember}
+        onClose={() => setIsMemberFormOpen(false)}
+        onSave={handleSaveMember}
+        onDelete={handleDeleteMember}
+        totalMembersCount={members.length}
+      />
+
+      <ManageFamilyModal
+        isOpen={isManageFamilyOpen}
+        onClose={() => setIsManageFamilyOpen(false)}
+        members={members}
+        selectedMemberId={selectedMemberId}
+        onSelectMember={(id) => {
+          setSelectedMemberId(id);
+          setSelectedHistoryIndex(null);
+        }}
+        onOpenAddMember={openAddMember}
+        onOpenEditMember={openEditMember}
+        onDeleteMember={handleDeleteMember}
+        onOpenQRPairing={() => setIsQRPairingOpen(true)}
+      />
+
+      <QRCodePairingModal
+        isOpen={isQRPairingOpen}
+        onClose={() => setIsQRPairingOpen(false)}
+        onMemberPaired={handleMemberPairedFromQR}
+      />
+
+      <ChildDeviceSimulatorModal
+        isOpen={isChildSimulatorOpen}
+        onClose={() => setIsChildSimulatorOpen(false)}
+        currentMember={currentMember}
+        onTriggerSOS={handleTriggerSOS}
+        onRequestExtraTime={handleRequestExtraTime}
+      />
+
+      <AndroidNativeModal
+        isOpen={isAndroidModalOpen}
+        onClose={() => setIsAndroidModalOpen(false)}
+      />
+    </div>
+  );
+}

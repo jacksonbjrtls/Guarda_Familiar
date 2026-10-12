@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: contain;
+  }
+  
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* Mobile safe area padding utilities */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 16px);
+}
+
+/* Custom leaflet tweaks */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif !important;
+  background-color: #f1f5f9;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 16px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  padding: 4px;
+}
+
+.leaflet-popup-content {
+  margin: 12px 14px;
+  line-height: 1.4;
+}
+
+/* Radar pulse animation for child marker */
+@keyframes childPulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.6);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 18px rgba(79, 70, 229, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(79, 70, 229, 0);
+  }
+}
+
+.pulse-radar {
+  animation: childPulse 2.4s infinite ease-out;
+}
+

@@ -1,0 +1,6 @@
+{
+  "name": "Guardião Familiar - Rastreamento e Segurança Infantil",
+  "description": "Aplicativo de segurança infantil e controle parental com rastreamento GPS em tempo real, monitoramento de bateria, cercas geográficas seguras, histórico de locais, checagem de áudio ambiente e controle de tempo de tela.",
+  "requestFramePermissions": ["geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
