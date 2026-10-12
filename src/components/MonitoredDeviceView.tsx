@@ -23,6 +23,7 @@ import {
   Check
 } from 'lucide-react';
 import { playEmergencyAlertSound, playNotificationChime } from '../utils/audio';
+import { reverseGeocodeCoordinates } from '../utils/geolocation';
 
 interface MonitoredDeviceViewProps {
   token?: string;
@@ -46,6 +47,7 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
   // GPS State
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'requesting' | 'active' | 'denied'>('idle');
   const [currentCoords, setCurrentCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [currentAddress, setCurrentAddress] = useState<string | null>(null);
   const [accuracyMeters, setAccuracyMeters] = useState<number | null>(null);
   const [gpsWatchId, setGpsWatchId] = useState<number | null>(null);
   const [lastSyncTime, setLastSyncTime] = useState<string>('Aguardando ativação');
@@ -158,7 +160,7 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
 
     setGpsStatus('requesting');
 
-    const updateLocation = (pos: GeolocationPosition) => {
+    const updateLocation = async (pos: GeolocationPosition) => {
       const lat = pos.coords.latitude;
       const lng = pos.coords.longitude;
       const accuracy = Math.round(pos.coords.accuracy);
@@ -169,6 +171,10 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       setLastSyncTime(timeStr);
 
+      // Reverse geocode to exact real street address
+      const resolvedAddress = await reverseGeocodeCoordinates(lat, lng);
+      setCurrentAddress(resolvedAddress);
+
       // Broadcast update to parent app in storage / broadcast channel
       syncDeviceDataToStorage({
         token,
@@ -178,6 +184,7 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
         isCharging,
         coords: { lat, lng },
         accuracy,
+        address: resolvedAddress,
         lastSync: timeStr,
       });
 
@@ -403,6 +410,12 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
           {/* GPS Coordinates or Permission Notice */}
           {gpsStatus === 'active' && currentCoords ? (
             <div className="bg-slate-950 rounded-xl p-3 border border-slate-800/80 mb-2">
+              {currentAddress && (
+                <div className="flex items-center gap-1.5 text-xs text-white font-semibold mb-2 pb-2 border-b border-slate-800 truncate">
+                  <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span className="truncate">{currentAddress}</span>
+                </div>
+              )}
               <div className="flex items-center justify-between text-xs mb-1">
                 <span className="text-slate-400">Coordenadas atuais:</span>
                 <span className="font-mono text-emerald-400 font-medium">
@@ -411,7 +424,7 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
               </div>
               <div className="flex items-center justify-between text-[11px] text-slate-500">
                 <span>Última sincronização: {lastSyncTime}</span>
-                <span className="text-slate-400">Satélites conectados</span>
+                <span className="text-slate-400">Precisão: ±{accuracyMeters || 8}m</span>
               </div>
             </div>
           ) : gpsStatus === 'denied' ? (

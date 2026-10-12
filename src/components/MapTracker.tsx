@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import L from 'leaflet';
 import { FamilyMember, SafeZone, Coordinates } from '../types';
 import { 
@@ -11,9 +11,16 @@ import {
   RotateCcw, 
   Plus, 
   ShieldCheck,
-  Compass
+  Compass,
+  Radio,
+  LocateFixed,
+  CheckCircle2,
+  AlertCircle,
+  RefreshCw,
+  Sparkles
 } from 'lucide-react';
 import { playNotificationChime } from '../utils/audio';
+import { reverseGeocodeCoordinates } from '../utils/geolocation';
 
 interface MapTrackerProps {
   currentMember: FamilyMember;
@@ -38,12 +45,21 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
   const zonesLayerRef = useRef<L.LayerGroup | null>(null);
   const routePolylineRef = useRef<L.Polyline | null>(null);
   const historyMarkersLayerRef = useRef<L.LayerGroup | null>(null);
+  const accuracyCircleRef = useRef<L.Circle | null>(null);
+  const gpsWatchIdRef = useRef<number | null>(null);
 
   const [mapStyle, setMapStyle] = useState<'streets' | 'satellite'>('streets');
   const [isSimulatingMove, setIsSimulatingMove] = useState(false);
   const simulationStepRef = useRef(0);
   const simulationIntervalRef = useRef<number | null>(null);
   const [isAddingZoneMode, setIsAddingZoneMode] = useState(false);
+
+  // Real Device GPS states
+  const [userGpsStatus, setUserGpsStatus] = useState<'idle' | 'locating' | 'active' | 'denied' | 'error'>('locating');
+  const [userGpsCoords, setUserGpsCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [userGpsAccuracy, setUserGpsAccuracy] = useState<number | null>(null);
+  const [gpsAddress, setGpsAddress] = useState<string | null>(null);
+  const [isTrackingLive, setIsTrackingLive] = useState<boolean>(true);
 
   // Simulation waypoint path from School back to Home via Paulista and Rebouças
   const simulationPath = [
@@ -55,7 +71,7 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
     { lat: -23.5678, lng: -46.6854, address: 'Rua dos Pinheiros, 450 (Chegando em Casa)', speed: 0 },
   ];
 
-  // Initialize Map
+  // Initialize Leaflet Map
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
@@ -68,7 +84,7 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
 
       L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-      // Tile layers
+      // Default street tile layer
       const streetLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
         maxZoom: 19,
@@ -88,13 +104,9 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
       zonesLayerRef.current = L.layerGroup().addTo(map);
       historyMarkersLayerRef.current = L.layerGroup().addTo(map);
     }
-
-    return () => {
-      // Map remains mounted during lifecycle
-    };
   }, []);
 
-  // Update Tile Style
+  // Update Tile Style (Streets vs Satellite)
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -118,6 +130,99 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
     }
   }, [mapStyle]);
 
+  // Activate real device GPS and track location automatically
+  const activateDeviceGps = useCallback((forceCenter: boolean = true) => {
+    if (!navigator.geolocation) {
+      setUserGpsStatus('denied');
+      return;
+    }
+
+    setUserGpsStatus('locating');
+
+    const handlePosSuccess = async (pos: GeolocationPosition) => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const accuracy = Math.round(pos.coords.accuracy);
+      const speedKmH = pos.coords.speed ? Math.round(pos.coords.speed * 3.6) : 0;
+
+      setUserGpsCoords({ lat, lng });
+      setUserGpsAccuracy(accuracy);
+      setUserGpsStatus('active');
+
+      const map = mapInstanceRef.current;
+      if (map && forceCenter) {
+        map.flyTo([lat, lng], 16, { duration: 1.2 });
+      }
+
+      // Draw or update accuracy circle on map
+      if (map) {
+        if (accuracyCircleRef.current) {
+          accuracyCircleRef.current.setLatLng([lat, lng]);
+          accuracyCircleRef.current.setRadius(accuracy);
+        } else {
+          accuracyCircleRef.current = L.circle([lat, lng], {
+            radius: accuracy,
+            color: '#4f46e5',
+            fillColor: '#818cf8',
+            fillOpacity: 0.12,
+            weight: 1.5,
+            dashArray: '3, 4',
+          }).addTo(map);
+        }
+      }
+
+      // Reverse geocode to exact street and city
+      const resolvedAddress = await reverseGeocodeCoordinates(lat, lng);
+      setGpsAddress(resolvedAddress);
+
+      if (onLocationUpdate) {
+        onLocationUpdate({ lat, lng }, resolvedAddress, speedKmH);
+      }
+    };
+
+    const handlePosError = (err: GeolocationPositionError) => {
+      console.warn('Erro ao obter GPS do celular:', err.message);
+      if (err.code === err.PERMISSION_DENIED) {
+        setUserGpsStatus('denied');
+      } else {
+        setUserGpsStatus('error');
+      }
+    };
+
+    // Immediate high precision reading
+    navigator.geolocation.getCurrentPosition(handlePosSuccess, handlePosError, {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 0,
+    });
+
+    // Continuous watch for movement
+    if (gpsWatchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(gpsWatchIdRef.current);
+    }
+    gpsWatchIdRef.current = navigator.geolocation.watchPosition(handlePosSuccess, handlePosError, {
+      enableHighAccuracy: true,
+      timeout: 15000,
+      maximumAge: 4000,
+    });
+  }, [onLocationUpdate]);
+
+  // Auto-activate GPS when component mounts
+  useEffect(() => {
+    activateDeviceGps(true);
+
+    return () => {
+      if (gpsWatchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(gpsWatchIdRef.current);
+        gpsWatchIdRef.current = null;
+      }
+      if (accuracyCircleRef.current && mapInstanceRef.current) {
+        mapInstanceRef.current.removeLayer(accuracyCircleRef.current);
+        accuracyCircleRef.current = null;
+      }
+    };
+  }, [activateDeviceGps]);
+
   // Update Child Marker
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -131,8 +236,8 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
       className: 'custom-child-marker-container',
       html: `
         <div style="position: relative; display: flex; align-items: center; justify-content: center; width: 44px; height: 44px;">
-          <div style="position: absolute; width: 44px; height: 44px; border-radius: 9999px; background: rgba(99, 102, 241, 0.25); animation: childPulse 2s infinite ease-out;"></div>
-          <div style="position: absolute; width: 34px; height: 34px; border-radius: 9999px; background: #ffffff; box-shadow: 0 4px 10px rgba(0,0,0,0.18); display: flex; align-items: center; justify-content: center; border: 2.5px solid #4f46e5; z-index: 10;">
+          <div style="position: absolute; width: 44px; height: 44px; border-radius: 9999px; background: rgba(99, 102, 241, 0.28); animation: childPulse 2s infinite ease-out;"></div>
+          <div style="position: absolute; width: 34px; height: 34px; border-radius: 9999px; background: #ffffff; box-shadow: 0 4px 12px rgba(0,0,0,0.22); display: flex; align-items: center; justify-content: center; border: 2.5px solid #4f46e5; z-index: 10;">
             <span style="font-size: 13px; font-weight: 700; color: #4f46e5;">${currentMember.avatarInitials}</span>
           </div>
           <div style="position: absolute; bottom: -8px; background: #0f172a; color: #ffffff; font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 9999px; white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.2); z-index: 20;">
@@ -310,29 +415,64 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
   }, []);
 
   return (
-    <div className="relative w-full h-[52vh] min-h-[380px] max-h-[560px] rounded-2xl overflow-hidden border border-slate-200 shadow-xs bg-slate-100 flex flex-col">
+    <div className="relative w-full h-[54vh] min-h-[400px] max-h-[580px] rounded-2xl overflow-hidden border border-slate-200 shadow-xs bg-slate-100 flex flex-col">
       {/* Map Viewport Container */}
       <div ref={mapContainerRef} className="w-full h-full flex-1 z-0" />
 
-      {/* Adding Safe Zone banner indicator */}
-      {isAddingZoneMode && (
-        <div className="absolute top-3 left-3 right-3 z-20 bg-indigo-600 text-white px-3 py-2 rounded-xl text-xs font-semibold shadow-lg flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 truncate">
-            <MapPin className="w-4 h-4 shrink-0" />
-            <span className="truncate">Toque no mapa para marcar a zona</span>
+      {/* Top Banner: Real-Time GPS Status */}
+      <div className="absolute top-3 left-3 right-14 z-20 flex flex-col gap-1 pointer-events-none">
+        {userGpsStatus === 'active' ? (
+          <div className="pointer-events-auto bg-slate-900/90 backdrop-blur-md text-white px-3 py-1.5 rounded-xl text-xs font-semibold shadow-lg border border-slate-700/80 flex items-center justify-between gap-2 max-w-full">
+            <div className="flex items-center gap-2 truncate">
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <span className="truncate text-[11px]">
+                <strong className="text-emerald-400">GPS Ativo:</strong> {gpsAddress || currentMember.currentLocation.address}
+              </span>
+            </div>
+            {userGpsAccuracy && (
+              <span className="text-[10px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded shrink-0 font-mono">
+                ±{userGpsAccuracy}m
+              </span>
+            )}
           </div>
-          <button 
-            onClick={() => setIsAddingZoneMode(false)}
-            className="bg-indigo-800 hover:bg-indigo-900 px-2 py-1 rounded-lg text-[10px] shrink-0"
+        ) : userGpsStatus === 'locating' ? (
+          <div className="pointer-events-auto bg-indigo-900/90 backdrop-blur-md text-white px-3 py-1.5 rounded-xl text-xs font-semibold shadow-lg border border-indigo-700 flex items-center gap-2 animate-pulse">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-300 shrink-0" />
+            <span className="text-[11px] truncate">Capturando sinal GPS exato do aparelho...</span>
+          </div>
+        ) : userGpsStatus === 'denied' ? (
+          <button
+            onClick={() => activateDeviceGps(true)}
+            className="pointer-events-auto bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold shadow-lg flex items-center gap-2 text-left transition-colors"
           >
-            Cancelar
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-200" />
+            <span className="text-[11px] truncate">Toque para autorizar o GPS do celular e capturar local exato</span>
           </button>
-        </div>
-      )}
+        ) : null}
+
+        {/* Adding Safe Zone banner indicator */}
+        {isAddingZoneMode && (
+          <div className="pointer-events-auto bg-indigo-600 text-white px-3 py-2 rounded-xl text-xs font-semibold shadow-lg flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 truncate">
+              <MapPin className="w-4 h-4 shrink-0" />
+              <span className="truncate">Toque no mapa para marcar a zona</span>
+            </div>
+            <button 
+              onClick={() => setIsAddingZoneMode(false)}
+              className="bg-indigo-800 hover:bg-indigo-900 px-2 py-1 rounded-lg text-[10px] shrink-0"
+            >
+              Cancelar
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Floating Control Strip - Top Right (Mobile Touch >= 44px) */}
-      <div className="absolute top-3 right-3 z-10 flex flex-col gap-2">
-        {/* Style Switcher */}
+      <div className="absolute top-3 right-3 z-20 flex flex-col gap-2">
+        {/* Style Switcher (Satellite vs Street) */}
         <button
           onClick={() => setMapStyle(prev => prev === 'streets' ? 'satellite' : 'streets')}
           className="w-10 h-10 bg-white/95 backdrop-blur-sm text-slate-700 rounded-xl shadow-md border border-slate-200/90 flex items-center justify-center transition-colors active:scale-95"
@@ -342,7 +482,21 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
           <Layers className="w-4 h-4 text-slate-600" />
         </button>
 
-        {/* Center Button */}
+        {/* Real Device GPS Quick Capture Button */}
+        <button
+          onClick={() => activateDeviceGps(true)}
+          className={`w-10 h-10 rounded-xl shadow-md border flex items-center justify-center transition-all active:scale-95 ${
+            userGpsStatus === 'active'
+              ? 'bg-emerald-50 text-emerald-600 border-emerald-300 ring-2 ring-emerald-400/30'
+              : 'bg-white/95 text-slate-700 border-slate-200/90 hover:bg-slate-50'
+          }`}
+          title="Capturar Meu Local Exato (GPS do Celular)"
+          aria-label="Capturar GPS do celular"
+        >
+          <LocateFixed className={`w-5 h-5 ${userGpsStatus === 'active' ? 'text-emerald-600' : 'text-indigo-600'}`} />
+        </button>
+
+        {/* Center on Monitored Member Button */}
         <button
           onClick={handleCenterOnChild}
           className="w-10 h-10 bg-white/95 backdrop-blur-sm text-indigo-600 rounded-xl shadow-md border border-slate-200/90 flex items-center justify-center transition-colors active:scale-95"
@@ -374,8 +528,15 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
               <div className="flex items-center gap-1.5">
                 <span className="font-bold text-slate-900 text-xs truncate">{currentMember.name}</span>
                 <span className="text-[11px] text-slate-500 font-normal">· {currentMember.device.batteryLevel}% bat</span>
+                {userGpsStatus === 'active' && (
+                  <span className="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded-full shrink-0">
+                    GPS Ao Vivo
+                  </span>
+                )}
               </div>
-              <p className="text-[11px] text-slate-500 truncate">{currentMember.currentLocation.address}</p>
+              <p className="text-[11px] text-slate-500 truncate">
+                {gpsAddress || currentMember.currentLocation.address}
+              </p>
             </div>
           </div>
         </div>
@@ -383,22 +544,31 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
         {/* Action Buttons Strip */}
         <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
           <button
+            onClick={() => activateDeviceGps(true)}
+            className="flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 min-h-[40px] bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs active:scale-[0.98]"
+          >
+            <LocateFixed className="w-3.5 h-3.5" />
+            <span>Atualizar Local Exato (GPS)</span>
+          </button>
+
+          <button
             onClick={toggleSimulation}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 min-h-[40px] ${
+            className={`py-2 px-3 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 min-h-[40px] shrink-0 ${
               isSimulatingMove 
                 ? 'bg-amber-500 text-white shadow-xs' 
-                : 'bg-indigo-600 text-white shadow-xs active:bg-indigo-700'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
             }`}
+            title="Simular trajeto de teste"
           >
             {isSimulatingMove ? (
               <>
                 <Pause className="w-3.5 h-3.5" />
-                <span>Pausar Simulação</span>
+                <span>Pausar</span>
               </>
             ) : (
               <>
                 <Play className="w-3.5 h-3.5 fill-current" />
-                <span>Simular Deslocamento</span>
+                <span>Simular</span>
               </>
             )}
           </button>

@@ -158,6 +158,7 @@ export default function App() {
                     ...m.currentLocation,
                     lat: payload.coords.lat,
                     lng: payload.coords.lng,
+                    address: payload.address || m.currentLocation.address,
                     lastUpdated: payload.lastSync || 'Agora',
                     statusText: 'GPS ao vivo transmitido do aparelho',
                   },
