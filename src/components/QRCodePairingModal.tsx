@@ -61,7 +61,149 @@ export const QRCodePairingModal: React.FC<QRCodePairingModalProps> = ({
 
   // Link for the child device to open when scanning the QR code
   const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://guardiao-familiar.app';
-  const pairingUrl = `${currentOrigin}/conectar?token=${pairingToken}&nome=${encodeURIComponent(childName)}`;
+  const pairingUrl = `${currentOrigin}/?conectar=1&token=${pairingToken}&nome=${encodeURIComponent(childName)}&parentesco=${encodeURIComponent(relationship)}&tel=${encodeURIComponent(phoneNumber)}`;
+
+  // Listen for live pairing from real mobile device via BroadcastChannel or Storage
+  useEffect(() => {
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel('guardiao_family_sync');
+      channel.onmessage = (event) => {
+        if (event.data?.type === 'DEVICE_UPDATE' && event.data.payload) {
+          const payload = event.data.payload;
+          if (payload.token === pairingToken || !scannedResult) {
+            const detectedModel = payload.model || selectedDevicePreset || 'Android Smartphone';
+            const detectedBattery = payload.battery || 85;
+            const detectedOS = 'Android Web GPS Client';
+            const detectedCoords = payload.coords || { lat: -23.5645, lng: -46.6720 };
+            const formattedPhone = phoneNumber.trim() || '(11) 98123-4567';
+
+            setScannedResult({
+              model: detectedModel,
+              battery: detectedBattery,
+              os: detectedOS,
+              phone: formattedPhone,
+              coords: detectedCoords,
+            });
+
+            const initials = (payload.name || childName)
+              .trim()
+              .split(' ')
+              .slice(0, 2)
+              .map((n: string) => n[0].toUpperCase())
+              .join('') || 'DF';
+
+            const newPairedMember: FamilyMember = {
+              id: `member-qr-${Date.now()}`,
+              name: payload.name || childName.trim() || 'Filho Conectado',
+              role: 'child',
+              relationship,
+              age: 12,
+              avatarColor: 'bg-emerald-600',
+              avatarInitials: initials,
+              phone: formattedPhone,
+              device: {
+                model: detectedModel,
+                batteryLevel: detectedBattery,
+                isCharging: payload.isCharging || false,
+                networkType: '5G',
+                soundMode: 'Normal',
+                gpsAccuracyMeters: payload.accuracy || 4,
+                lastSync: 'Conectado em tempo real via QR Code',
+                isDeviceLocked: false,
+                screenTimeLockActive: false,
+                powerSavingMode: false,
+              },
+              currentLocation: {
+                lat: detectedCoords.lat,
+                lng: detectedCoords.lng,
+                address: 'Localização GPS em Tempo Real (Aparelho Físico)',
+                speedKmH: 0,
+                currentZoneName: 'Transmitindo ao Vivo',
+                statusText: 'Vinculado via QR Code (Zero Instalação)',
+                lastUpdated: 'Agora mesmo',
+              },
+              safeZones: [
+                {
+                  id: `zone-home-${Date.now()}`,
+                  name: 'Casa',
+                  address: 'Residência da Família',
+                  lat: detectedCoords.lat,
+                  lng: detectedCoords.lng,
+                  radiusMeters: 200,
+                  color: '#10b981',
+                  iconType: 'home',
+                  notifyOnEntry: true,
+                  notifyOnExit: true,
+                },
+              ],
+              screenTime: {
+                dailyLimitMinutes: 180,
+                usedMinutesToday: 20,
+                downtimeActive: false,
+                downtimeStart: '21:30',
+                downtimeEnd: '06:30',
+                schoolModeActive: true,
+                schoolStart: '07:30',
+                schoolEnd: '12:30',
+              },
+              apps: [
+                {
+                  id: `app-yt-${Date.now()}`,
+                  name: 'YouTube',
+                  category: 'Streaming',
+                  icon: 'Youtube',
+                  isBlocked: false,
+                  dailyLimitMinutes: 45,
+                  usedMinutesToday: 15,
+                },
+                {
+                  id: `app-roblox-${Date.now()}`,
+                  name: 'Roblox',
+                  category: 'Jogos',
+                  icon: 'Gamepad2',
+                  isBlocked: false,
+                  dailyLimitMinutes: 30,
+                  usedMinutesToday: 10,
+                },
+                {
+                  id: `app-wa-${Date.now()}`,
+                  name: 'WhatsApp',
+                  category: 'Mensagens',
+                  icon: 'MessageSquare',
+                  isBlocked: false,
+                  dailyLimitMinutes: 120,
+                  usedMinutesToday: 5,
+                  alwaysAllowed: true,
+                },
+              ],
+              history: [
+                {
+                  id: `hist-qr-${Date.now()}`,
+                  time: 'Agora mesmo',
+                  timestamp: Date.now(),
+                  title: 'Ativação Instantânea por QR Code',
+                  address: 'Transmissão GPS Conectada',
+                  lat: detectedCoords.lat,
+                  lng: detectedCoords.lng,
+                  durationMinutes: 1,
+                  type: 'stay',
+                },
+              ],
+              audioLogs: [],
+            };
+
+            playNotificationChime();
+            onMemberPaired(newPairedMember);
+          }
+        }
+      };
+    } catch {}
+
+    return () => {
+      if (channel) channel.close();
+    };
+  }, [isOpen, pairingToken, childName, relationship, phoneNumber, onMemberPaired, scannedResult, selectedDevicePreset]);
 
   // Generate QR Code on canvas
   useEffect(() => {
@@ -424,6 +566,17 @@ export const QRCodePairingModal: React.FC<QRCodePairingModalProps> = ({
                   )}
                 </button>
               </div>
+
+              {/* Direct Open in Mobile Preview / Tab */}
+              <a
+                href={pairingUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full py-2.5 px-3 border border-indigo-200 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Ver Como Fica na Tela do Celular (Testar no Navegador)</span>
+              </a>
 
               {/* Success Result Card */}
               {scannedResult && (

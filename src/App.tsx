@@ -13,6 +13,7 @@ import { AlertsDrawer } from './components/AlertsDrawer';
 import { MemberFormModal } from './components/MemberFormModal';
 import { ManageFamilyModal } from './components/ManageFamilyModal';
 import { QRCodePairingModal } from './components/QRCodePairingModal';
+import { MonitoredDeviceView } from './components/MonitoredDeviceView';
 import { ChildDeviceSimulatorModal } from './components/ChildDeviceSimulatorModal';
 import { AndroidNativeModal } from './components/AndroidNativeModal';
 import { playEmergencyAlertSound, playNotificationChime } from './utils/audio';
@@ -57,6 +58,23 @@ export default function App() {
   const [isAndroidModalOpen, setIsAndroidModalOpen] = useState(false);
   const [isQRPairingOpen, setIsQRPairingOpen] = useState(false);
 
+  // Check if opened directly via QR Code scan or URL parameters
+  const [isMonitoredMode, setIsMonitoredMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.has('conectar') || params.has('token') || window.location.pathname.includes('conectar');
+  });
+
+  const [monitoredParams] = useState(() => {
+    if (typeof window === 'undefined') return { token: 'GUARD-DEMO', nome: 'Lucas Silva', parentesco: 'Filho' };
+    const params = new URLSearchParams(window.location.search);
+    return {
+      token: params.get('token') || 'GUARD-LIVE',
+      nome: params.get('nome') || 'Filho Conectado',
+      parentesco: params.get('parentesco') || 'Filho',
+    };
+  });
+
   // Map & Route selection state
   const [selectedHistoryIndex, setSelectedHistoryIndex] = useState<number | null>(null);
   const [showFullDayRoute, setShowFullDayRoute] = useState(false);
@@ -81,10 +99,93 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
+  // Cross-device synchronization with child's phone
+  useEffect(() => {
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel('guardiao_family_sync');
+      channel.onmessage = (event) => {
+        const { type, payload } = event.data || {};
+        if (type === 'SOS_ALERT') {
+          playEmergencyAlertSound();
+          showToast(`🚨 ALERTA SOS recebido de ${payload?.name || 'Dependente'}!`);
+          const newAlert: SecurityAlert = {
+            id: `sos-${Date.now()}`,
+            memberId: selectedMemberId,
+            memberName: payload?.name || currentMember.name,
+            timestamp: payload?.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            dateKey: 'Hoje',
+            type: 'SOS',
+            title: `🚨 BOTÃO DE PÂNICO ACIONADO por ${payload?.name || 'Dependente'}!`,
+            description: `O dependente pressionou o botão SOS de emergência na tela do celular. Coordenadas: ${payload?.coords?.lat?.toFixed(4)}, ${payload?.coords?.lng?.toFixed(4)}.`,
+            severity: 'critical',
+            read: false,
+          };
+          setAlerts(prev => [newAlert, ...prev]);
+          setIsAlertsOpen(true);
+        } else if (type === 'CHECK_IN_ALERT') {
+          playNotificationChime();
+          showToast(`📍 CHECK-IN: ${payload?.name || 'Dependente'} avisou que chegou bem!`);
+          const newAlert: SecurityAlert = {
+            id: `checkin-${Date.now()}`,
+            memberId: selectedMemberId,
+            memberName: payload?.name || currentMember.name,
+            timestamp: payload?.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            dateKey: 'Hoje',
+            type: 'GEOFENCE_ENTRY',
+            title: `📍 Check-in de Chegada: ${payload?.name || 'Dependente'}`,
+            description: `Aviso confirmado: O dependente tocou em "Cheguei Bem" no celular.`,
+            severity: 'info',
+            read: false,
+          };
+          setAlerts(prev => [newAlert, ...prev]);
+        } else if (type === 'DEVICE_UPDATE' && payload?.coords) {
+          // Real-time GPS and battery live transmission
+          setMembers(prevMembers =>
+            prevMembers.map(m => {
+              const matchesName = m.name.toLowerCase().includes((payload.name || '').toLowerCase());
+              if (matchesName || m.id === selectedMemberId) {
+                return {
+                  ...m,
+                  device: {
+                    ...m.device,
+                    batteryLevel: payload.battery || m.device.batteryLevel,
+                    isCharging: payload.isCharging ?? m.device.isCharging,
+                    model: payload.model || m.device.model,
+                    lastSync: 'Transmitindo agora em tempo real',
+                  },
+                  currentLocation: {
+                    ...m.currentLocation,
+                    lat: payload.coords.lat,
+                    lng: payload.coords.lng,
+                    lastUpdated: payload.lastSync || 'Agora',
+                    statusText: 'GPS ao vivo transmitido do aparelho',
+                  },
+                };
+              }
+              return m;
+            })
+          );
+        }
+      };
+    } catch {}
+
+    return () => {
+      if (channel) channel.close();
+    };
+  }, [selectedMemberId, currentMember.name]);
+
   // Trigger Sound Alarm on child's device
   const handleTriggerSoundAlert = () => {
     playEmergencyAlertSound();
     showToast(`Alarme de alta intensidade emitido no aparelho de ${currentMember.name.split(' ')[0]}!`);
+
+    // Broadcast to remote phone
+    try {
+      const channel = new BroadcastChannel('guardiao_family_sync');
+      channel.postMessage({ type: 'PLAY_ALARM' });
+      channel.close();
+    } catch {}
 
     const newAlert: SecurityAlert = {
       id: `alert-ring-${Date.now()}`,
@@ -448,6 +549,22 @@ export default function App() {
   };
 
   const unreadAlertsCount = alerts.filter(a => !a.read).length;
+
+  if (isMonitoredMode) {
+    return (
+      <MonitoredDeviceView
+        token={monitoredParams.token}
+        initialMemberName={monitoredParams.nome}
+        initialRelationship={monitoredParams.parentesco}
+        onSwitchToAdmin={() => {
+          setIsMonitoredMode(false);
+          if (typeof window !== 'undefined') {
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-100 sm:py-6 flex justify-center text-slate-900 font-sans">
