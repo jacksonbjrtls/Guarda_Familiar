@@ -25,6 +25,7 @@ import {
   Users
 } from 'lucide-react';
 import { playNotificationChime } from '../utils/audio';
+import { connectRealtimeStream, sendPairHandshake } from '../services/realtimeSync';
 
 interface QRCodePairingModalProps {
   isOpen: boolean;
@@ -60,156 +61,148 @@ export const QRCodePairingModal: React.FC<QRCodePairingModalProps> = ({
     coords: { lat: number; lng: number };
   } | null>(null);
 
-  // Link for the child device to open when scanning the QR code
-  // If running in development (ais-dev-), automatically use the shared published URL (ais-pre-)
-  // so external phones can open it directly without needing Google Cloud / AI Studio login credentials.
+  // Direct link for the child's smartphone to open
   const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://guardiao-familiar.app';
-  const publicOrigin = currentOrigin.includes('ais-dev-')
-    ? currentOrigin.replace('ais-dev-', 'ais-pre-')
-    : currentOrigin;
+  const pairingUrl = `${currentOrigin}/?conectar=1&token=${pairingToken}&nome=${encodeURIComponent(childName)}&parentesco=${encodeURIComponent(relationship)}&tel=${encodeURIComponent(phoneNumber)}`;
 
-  const targetOrigin = usePublicUrl ? publicOrigin : currentOrigin;
-  const pairingUrl = `${targetOrigin}/?conectar=1&token=${pairingToken}&nome=${encodeURIComponent(childName)}&parentesco=${encodeURIComponent(relationship)}&tel=${encodeURIComponent(phoneNumber)}`;
-
-  // Listen for live pairing from real mobile device via BroadcastChannel or Storage
+  // Listen for live pairing from real mobile device via SSE and cross-device API
   useEffect(() => {
-    let channel: BroadcastChannel | null = null;
-    try {
-      channel = new BroadcastChannel('guardiao_family_sync');
-      channel.onmessage = (event) => {
-        if (event.data?.type === 'DEVICE_UPDATE' && event.data.payload) {
-          const payload = event.data.payload;
-          if (payload.token === pairingToken || !scannedResult) {
-            const detectedModel = payload.model || selectedDevicePreset || 'Android Smartphone';
-            const detectedBattery = payload.battery || 85;
-            const detectedOS = 'Android Web GPS Client';
-            const detectedCoords = payload.coords || { lat: -23.5645, lng: -46.6720 };
-            const formattedPhone = phoneNumber.trim() || '(11) 98123-4567';
+    if (!isOpen) return;
 
-            setScannedResult({
+    const unsubscribe = connectRealtimeStream(pairingToken, (event) => {
+      const isPairEvent = event.type === 'DEVICE_PAIRED' || event.type === 'DEVICE_UPDATE';
+      if (isPairEvent && event.payload) {
+        const payload = event.payload;
+        if (payload.token === pairingToken || !scannedResult) {
+          const detectedModel = payload.model || selectedDevicePreset || 'Android Smartphone';
+          const detectedBattery = payload.battery || 85;
+          const detectedOS = 'Android Web GPS Client';
+          const detectedCoords = payload.coords || { lat: -23.5645, lng: -46.6720 };
+          const formattedPhone = phoneNumber.trim() || '(11) 98123-4567';
+
+          setScannedResult({
+            model: detectedModel,
+            battery: detectedBattery,
+            os: detectedOS,
+            phone: formattedPhone,
+            coords: detectedCoords,
+          });
+
+          const initials = (payload.name || childName)
+            .trim()
+            .split(' ')
+            .slice(0, 2)
+            .map((n: string) => n[0].toUpperCase())
+            .join('') || 'DF';
+
+          const newPairedMember: FamilyMember = {
+            id: `member-qr-${Date.now()}`,
+            name: payload.name || childName.trim() || 'Filho Conectado',
+            role: 'child',
+            relationship,
+            age: 12,
+            avatarColor: 'bg-emerald-600',
+            avatarInitials: initials,
+            phone: formattedPhone,
+            device: {
               model: detectedModel,
-              battery: detectedBattery,
-              os: detectedOS,
-              phone: formattedPhone,
-              coords: detectedCoords,
-            });
-
-            const initials = (payload.name || childName)
-              .trim()
-              .split(' ')
-              .slice(0, 2)
-              .map((n: string) => n[0].toUpperCase())
-              .join('') || 'DF';
-
-            const newPairedMember: FamilyMember = {
-              id: `member-qr-${Date.now()}`,
-              name: payload.name || childName.trim() || 'Filho Conectado',
-              role: 'child',
-              relationship,
-              age: 12,
-              avatarColor: 'bg-emerald-600',
-              avatarInitials: initials,
-              phone: formattedPhone,
-              device: {
-                model: detectedModel,
-                batteryLevel: detectedBattery,
-                isCharging: payload.isCharging || false,
-                networkType: '5G',
-                soundMode: 'Normal',
-                gpsAccuracyMeters: payload.accuracy || 4,
-                lastSync: 'Conectado em tempo real via QR Code',
-                isDeviceLocked: false,
-                screenTimeLockActive: false,
-                powerSavingMode: false,
-              },
-              currentLocation: {
+              batteryLevel: detectedBattery,
+              isCharging: payload.isCharging || false,
+              networkType: '5G',
+              soundMode: 'Normal',
+              gpsAccuracyMeters: payload.accuracy || 4,
+              lastSync: 'Conectado em tempo real via QR Code',
+              isDeviceLocked: false,
+              screenTimeLockActive: false,
+              powerSavingMode: false,
+            },
+            currentLocation: {
+              lat: detectedCoords.lat,
+              lng: detectedCoords.lng,
+              address: payload.address || 'Localização GPS em Tempo Real (Aparelho Físico)',
+              speedKmH: 0,
+              currentZoneName: 'Transmitindo ao Vivo',
+              statusText: 'Vinculado via QR Code (Zero Instalação)',
+              lastUpdated: 'Agora mesmo',
+            },
+            safeZones: [
+              {
+                id: `zone-home-${Date.now()}`,
+                name: 'Casa',
+                address: 'Residência da Família',
                 lat: detectedCoords.lat,
                 lng: detectedCoords.lng,
-                address: 'Localização GPS em Tempo Real (Aparelho Físico)',
-                speedKmH: 0,
-                currentZoneName: 'Transmitindo ao Vivo',
-                statusText: 'Vinculado via QR Code (Zero Instalação)',
-                lastUpdated: 'Agora mesmo',
+                radiusMeters: 200,
+                color: '#10b981',
+                iconType: 'home',
+                notifyOnEntry: true,
+                notifyOnExit: true,
               },
-              safeZones: [
-                {
-                  id: `zone-home-${Date.now()}`,
-                  name: 'Casa',
-                  address: 'Residência da Família',
-                  lat: detectedCoords.lat,
-                  lng: detectedCoords.lng,
-                  radiusMeters: 200,
-                  color: '#10b981',
-                  iconType: 'home',
-                  notifyOnEntry: true,
-                  notifyOnExit: true,
-                },
-              ],
-              screenTime: {
-                dailyLimitMinutes: 180,
-                usedMinutesToday: 20,
-                downtimeActive: false,
-                downtimeStart: '21:30',
-                downtimeEnd: '06:30',
-                schoolModeActive: true,
-                schoolStart: '07:30',
-                schoolEnd: '12:30',
+            ],
+            screenTime: {
+              dailyLimitMinutes: 180,
+              usedMinutesToday: 20,
+              downtimeActive: false,
+              downtimeStart: '21:30',
+              downtimeEnd: '06:30',
+              schoolModeActive: true,
+              schoolStart: '07:30',
+              schoolEnd: '12:30',
+            },
+            apps: [
+              {
+                id: `app-yt-${Date.now()}`,
+                name: 'YouTube',
+                category: 'Streaming',
+                icon: 'Youtube',
+                isBlocked: false,
+                dailyLimitMinutes: 45,
+                usedMinutesToday: 15,
               },
-              apps: [
-                {
-                  id: `app-yt-${Date.now()}`,
-                  name: 'YouTube',
-                  category: 'Streaming',
-                  icon: 'Youtube',
-                  isBlocked: false,
-                  dailyLimitMinutes: 45,
-                  usedMinutesToday: 15,
-                },
-                {
-                  id: `app-roblox-${Date.now()}`,
-                  name: 'Roblox',
-                  category: 'Jogos',
-                  icon: 'Gamepad2',
-                  isBlocked: false,
-                  dailyLimitMinutes: 30,
-                  usedMinutesToday: 10,
-                },
-                {
-                  id: `app-wa-${Date.now()}`,
-                  name: 'WhatsApp',
-                  category: 'Mensagens',
-                  icon: 'MessageSquare',
-                  isBlocked: false,
-                  dailyLimitMinutes: 120,
-                  usedMinutesToday: 5,
-                  alwaysAllowed: true,
-                },
-              ],
-              history: [
-                {
-                  id: `hist-qr-${Date.now()}`,
-                  time: 'Agora mesmo',
-                  timestamp: Date.now(),
-                  title: 'Ativação Instantânea por QR Code',
-                  address: 'Transmissão GPS Conectada',
-                  lat: detectedCoords.lat,
-                  lng: detectedCoords.lng,
-                  durationMinutes: 1,
-                  type: 'stay',
-                },
-              ],
-              audioLogs: [],
-            };
+              {
+                id: `app-roblox-${Date.now()}`,
+                name: 'Roblox',
+                category: 'Jogos',
+                icon: 'Gamepad2',
+                isBlocked: false,
+                dailyLimitMinutes: 30,
+                usedMinutesToday: 10,
+              },
+              {
+                id: `app-wa-${Date.now()}`,
+                name: 'WhatsApp',
+                category: 'Mensagens',
+                icon: 'MessageSquare',
+                isBlocked: false,
+                dailyLimitMinutes: 120,
+                usedMinutesToday: 5,
+                alwaysAllowed: true,
+              },
+            ],
+            history: [
+              {
+                id: `hist-qr-${Date.now()}`,
+                time: 'Agora mesmo',
+                timestamp: Date.now(),
+                title: 'Ativação Instantânea por QR Code',
+                address: payload.address || 'Transmissão GPS Conectada',
+                lat: detectedCoords.lat,
+                lng: detectedCoords.lng,
+                durationMinutes: 1,
+                type: 'stay',
+              },
+            ],
+            audioLogs: [],
+          };
 
-            playNotificationChime();
-            onMemberPaired(newPairedMember);
-          }
+          playNotificationChime();
+          onMemberPaired(newPairedMember);
         }
-      };
-    } catch {}
+      }
+    });
 
     return () => {
-      if (channel) channel.close();
+      unsubscribe();
     };
   }, [isOpen, pairingToken, childName, relationship, phoneNumber, onMemberPaired, scannedResult, selectedDevicePreset]);
 
@@ -267,6 +260,19 @@ export const QRCodePairingModal: React.FC<QRCodePairingModalProps> = ({
         os: detectedOS,
         phone: formattedPhone,
         coords: detectedCoords,
+      });
+
+      // Synchronize with server backend and other devices
+      sendPairHandshake({
+        token: pairingToken,
+        name: childName.trim() || 'Filho Conectado',
+        model: detectedModel,
+        battery: detectedBattery,
+        coords: detectedCoords,
+        accuracy: 4,
+        address: 'Rua Bela Cintra, Cerqueira César, São Paulo - SP',
+        parentesco: relationship,
+        phone: formattedPhone,
       });
 
       const initials = childName
@@ -516,54 +522,118 @@ export const QRCodePairingModal: React.FC<QRCodePairingModalProps> = ({
                 </div>
               </div>
 
-              {/* QR Code Canvas Card */}
-              <div className="bg-gradient-to-b from-indigo-50/50 to-slate-50 border border-indigo-100 rounded-2xl p-3 text-center flex flex-col items-center justify-center shadow-xs">
-                <span className="text-[11px] font-bold text-indigo-900 mb-2">
-                  2. Aponte a câmera do celular para este QR Code:
-                </span>
+              {/* QR Code Canvas Card or Instant Success State */}
+              {scannedResult ? (
+                <div className="bg-gradient-to-b from-emerald-50 to-white border-2 border-emerald-500 rounded-2xl p-4 text-center shadow-lg space-y-3 animate-in zoom-in-95">
+                  <div className="flex items-center justify-between bg-emerald-600 text-white px-3 py-1.5 rounded-xl font-bold text-xs shadow-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="relative flex h-2.5 w-2.5">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-200 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-white"></span>
+                      </span>
+                      <span>CONEXÃO INSTANTÂNEA CONFIRMADA!</span>
+                    </div>
+                    <span className="text-[10px] bg-emerald-800/80 px-2 py-0.5 rounded-full font-mono">AO VIVO</span>
+                  </div>
 
-                <div className="p-2.5 bg-white rounded-2xl border border-slate-200/90 shadow-md mb-2">
-                  <canvas ref={canvasRef} className="mx-auto rounded-xl" />
+                  <div className="w-14 h-14 rounded-2xl bg-emerald-100 border border-emerald-300 text-emerald-600 mx-auto flex items-center justify-center">
+                    <CheckCircle2 className="w-8 h-8" />
+                  </div>
+
+                  <div>
+                    <h3 className="text-base font-extrabold text-slate-900">
+                      {childName || 'Dependente'} cadastrado(a) com sucesso!
+                    </h3>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      O aparelho físico acabou de se conectar e está transmitindo localização e bateria ao vivo!
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-left bg-emerald-50/60 p-2.5 rounded-xl border border-emerald-200 text-xs">
+                    <div>
+                      <span className="text-[10px] text-slate-500 block font-semibold">Aparelho Detectado:</span>
+                      <strong className="text-slate-900 font-bold flex items-center gap-1 text-[11px]">
+                        <Smartphone className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        <span className="truncate">{scannedResult.model}</span>
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-500 block font-semibold">Bateria Inicial:</span>
+                      <strong className="text-emerald-700 font-bold flex items-center gap-1 text-[11px]">
+                        <Battery className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        {scannedResult.battery}%
+                      </strong>
+                    </div>
+                    <div className="col-span-2 pt-1 border-t border-emerald-100">
+                      <span className="text-[10px] text-slate-500 block font-semibold">Localização GPS:</span>
+                      <span className="text-slate-800 font-medium text-[11px] flex items-center gap-1">
+                        <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                        <span className="truncate">
+                          {scannedResult.coords ? `${scannedResult.coords.lat.toFixed(4)}, ${scannedResult.coords.lng.toFixed(4)} • Sinal Ativo` : 'Localização ao Vivo'}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all"
+                  >
+                    <MapPin className="w-4 h-4" />
+                    <span>Concluir e Ver no Mapa do Pai Agora</span>
+                  </button>
                 </div>
+              ) : (
+                <div className="bg-gradient-to-b from-indigo-50/50 to-slate-50 border border-indigo-100 rounded-2xl p-3 text-center flex flex-col items-center justify-center shadow-xs">
+                  <div className="w-full mb-2.5 p-2 bg-indigo-50/90 border border-indigo-200 text-indigo-950 rounded-xl flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <Radio className="w-4 h-4 text-indigo-600 animate-pulse shrink-0" />
+                      <span className="font-semibold text-[11px] text-left leading-tight">
+                        Aguardando leitura do QR Code... <span className="text-indigo-600 font-bold block sm:inline">Conexão instantânea ativada</span>
+                      </span>
+                    </div>
+                    <span className="text-[10px] bg-indigo-200 text-indigo-800 px-2 py-0.5 rounded-full font-bold shrink-0">Radar Ativo</span>
+                  </div>
 
-                <div className="flex items-center justify-center gap-1.5 text-xs text-indigo-900 font-mono font-bold bg-indigo-50 px-3 py-1 rounded-full border border-indigo-200">
-                  <span>Token: {pairingToken}</span>
-                </div>
+                  <span className="text-[11px] font-bold text-indigo-900 mb-2">
+                    2. Aponte a câmera do celular para este QR Code:
+                  </span>
 
-                {/* Direct Link Preview & Copy */}
-                <div className="mt-2.5 w-full text-left bg-white/90 p-2.5 rounded-xl border border-indigo-100 space-y-1.5">
-                  <div className="flex items-center justify-between text-[11px] font-semibold text-slate-700">
-                    <span>Link Direto para o Celular:</span>
-                    {currentOrigin.includes('ais-dev-') && (
+                  <div className="p-2.5 bg-white rounded-2xl border border-slate-200/90 shadow-md mb-2 relative">
+                    <canvas ref={canvasRef} className="mx-auto rounded-xl" />
+                  </div>
+
+                  <div className="flex items-center justify-center gap-1.5 text-xs text-indigo-900 font-mono font-bold bg-indigo-50 px-3 py-1 rounded-full border border-indigo-200">
+                    <span>Token: {pairingToken}</span>
+                  </div>
+
+                  {/* Direct Link Preview & Copy */}
+                  <div className="mt-2.5 w-full text-left bg-white/90 p-2.5 rounded-xl border border-indigo-100 space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-slate-700">
+                      <span>Link Direto para o Celular:</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 bg-slate-50 px-2 py-1.5 rounded-lg border border-slate-200 text-[10px] font-mono text-slate-600">
+                      <span className="truncate flex-1 select-all">{pairingUrl}</span>
                       <button
                         type="button"
-                        onClick={() => setUsePublicUrl(!usePublicUrl)}
-                        className="text-[10px] text-indigo-600 font-bold hover:underline"
+                        onClick={handleCopyLink}
+                        className="px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-sans font-bold text-[10px] shrink-0 flex items-center gap-1 shadow-2xs"
                       >
-                        {usePublicUrl ? 'Mudar p/ Dev' : 'Mudar p/ Público (pre)'}
+                        {copiedLink ? <Check className="w-2.5 h-2.5" /> : <Copy className="w-2.5 h-2.5" />}
+                        <span>{copiedLink ? 'Copiado!' : 'Copiar'}</span>
                       </button>
-                    )}
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-tight">
+                      💡 Se a câmera do celular não ler ou der erro de acesso, você pode enviar esse link pelo WhatsApp ou colar direto no navegador do celular.
+                    </p>
                   </div>
-                  <div className="flex items-center gap-1.5 bg-slate-50 px-2 py-1.5 rounded-lg border border-slate-200 text-[10px] font-mono text-slate-600">
-                    <span className="truncate flex-1 select-all">{pairingUrl}</span>
-                    <button
-                      type="button"
-                      onClick={handleCopyLink}
-                      className="px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-sans font-bold text-[10px] shrink-0 flex items-center gap-1 shadow-2xs"
-                    >
-                      {copiedLink ? <Check className="w-2.5 h-2.5" /> : <Copy className="w-2.5 h-2.5" />}
-                      <span>{copiedLink ? 'Copiado!' : 'Copiar'}</span>
-                    </button>
-                  </div>
-                  <p className="text-[10px] text-slate-500 leading-tight">
-                    💡 Se a câmera do celular não ler ou der erro de acesso, você pode enviar esse link pelo WhatsApp ou colar direto no navegador do celular.
+
+                  <p className="text-[11px] text-slate-600 mt-2 font-medium">
+                    Ao ler o QR com a câmera nativa, o celular do filho abre o link seguro que detecta o aparelho instantaneamente.
                   </p>
                 </div>
-
-                <p className="text-[11px] text-slate-600 mt-2 font-medium">
-                  Ao ler o QR com a câmera nativa, o celular do filho abre o link seguro que detecta o aparelho instantaneamente.
-                </p>
-              </div>
+              )}
 
               {/* Actions: Copy Link & Simulate Scanning */}
               <div className="flex flex-col sm:flex-row gap-2">
@@ -615,39 +685,6 @@ export const QRCodePairingModal: React.FC<QRCodePairingModalProps> = ({
                 <ExternalLink className="w-3.5 h-3.5" />
                 <span>Ver Como Fica na Tela do Celular (Testar no Navegador)</span>
               </a>
-
-              {/* Success Result Card */}
-              {scannedResult && (
-                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs text-emerald-950 animate-in fade-in duration-200 space-y-2">
-                  <div className="flex items-center gap-2 font-bold text-emerald-900">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>{childName} cadastrado(a) com sucesso!</span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-[11px] bg-white/70 p-2.5 rounded-xl border border-emerald-100">
-                    <div>
-                      <span className="text-slate-500 block">Modelo Detectado:</span>
-                      <strong className="text-slate-800">{scannedResult.model}</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">Bateria Inicial:</span>
-                      <strong className="text-slate-800">{scannedResult.battery}%</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">Sistema:</span>
-                      <strong className="text-slate-800">{scannedResult.os}</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">Telefone Vinculado:</span>
-                      <strong className="text-slate-800 font-mono">{scannedResult.phone}</strong>
-                    </div>
-                  </div>
-
-                  <p className="text-[11px] text-emerald-800">
-                    O celular já foi adicionado à lista da família e está transmitindo localização e bateria no mapa!
-                  </p>
-                </div>
-              )}
             </>
           ) : (
             /* Educational Explanation Tab: Does the child need to install anything? */

@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { playEmergencyAlertSound, playNotificationChime } from '../utils/audio';
 import { reverseGeocodeCoordinates } from '../utils/geolocation';
+import { sendPairHandshake, sendLocationUpdate, sendAlert, connectRealtimeStream } from '../services/realtimeSync';
 
 interface MonitoredDeviceViewProps {
   token?: string;
@@ -83,20 +84,45 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
     }
     setDeviceModel(detected);
 
+    // Instant handshake on opening QR link: Immediately informs parent dashboard that phone is connected!
+    sendPairHandshake({
+      token,
+      name: initialMemberName,
+      model: detected,
+      battery: 85,
+      isCharging: false,
+      coords: currentCoords || { lat: -23.5645, lng: -46.6720 },
+      accuracy: 8,
+      address: 'Conectado via QR Code (Inicializando GPS...)',
+      parentesco: initialRelationship,
+    });
+
     // 2. Detect Real Battery if supported
     if ('getBattery' in navigator) {
       (navigator as any).getBattery().then((battery: any) => {
-        setBatteryLevel(Math.round(battery.level * 100));
+        const lvl = Math.round(battery.level * 100);
+        setBatteryLevel(lvl);
         setIsCharging(battery.charging);
 
+        // Update handshake with real battery
+        sendLocationUpdate({
+          token,
+          battery: lvl,
+          isCharging: battery.charging,
+          model: detected,
+          name: initialMemberName,
+        });
+
         battery.addEventListener('levelchange', () => {
-          setBatteryLevel(Math.round(battery.level * 100));
+          const newLvl = Math.round(battery.level * 100);
+          setBatteryLevel(newLvl);
+          sendLocationUpdate({ token, battery: newLvl, isCharging: battery.charging });
         });
         battery.addEventListener('chargingchange', () => {
           setIsCharging(battery.charging);
+          sendLocationUpdate({ token, isCharging: battery.charging });
         });
       }).catch(() => {
-        // Fallback random realistic level
         setBatteryLevel(82);
       });
     }
@@ -117,25 +143,21 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
     };
     window.addEventListener('beforeinstallprompt', handleBeforeInstall);
 
-    // 5. Sync across tabs/devices via BroadcastChannel if available
-    let channel: BroadcastChannel | null = null;
-    try {
-      channel = new BroadcastChannel('guardiao_family_sync');
-      channel.onmessage = (event) => {
-        if (event.data?.type === 'PLAY_ALARM') {
-          handlePlayAlarm();
-        }
-      };
-    } catch {
-      // BroadcastChannel fallback
-    }
+    // 5. Connect to real-time event stream (SSE + BroadcastChannel)
+    const unsubscribeStream = connectRealtimeStream(token, (event) => {
+      if (event?.type === 'PLAY_ALARM') {
+        handlePlayAlarm();
+      } else if (event?.type === 'REQUEST_LOCATION') {
+        startGpsTracking();
+      }
+    });
 
     // Auto-request GPS on open to give zero-touch experience
     startGpsTracking();
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
-      if (channel) channel.close();
+      unsubscribeStream();
     };
   }, []);
 
@@ -223,12 +245,24 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
     setGpsWatchId(watchId);
   };
 
-  // Sync to localStorage and BroadcastChannel
+  // Sync to localStorage, server API and BroadcastChannel
   const syncDeviceDataToStorage = (data: any) => {
     try {
       localStorage.setItem(`guardiao_device_${token}`, JSON.stringify(data));
       localStorage.setItem('guardiao_last_active_device', JSON.stringify(data));
       
+      // Real-time cross-device transmission via SSE/API
+      sendLocationUpdate({
+        token,
+        coords: data.coords,
+        battery: data.battery,
+        isCharging: data.isCharging,
+        accuracy: data.accuracy,
+        address: data.address,
+        model: data.model,
+        name: data.name,
+      });
+
       const channel = new BroadcastChannel('guardiao_family_sync');
       channel.postMessage({ type: 'DEVICE_UPDATE', payload: data });
       channel.close();
@@ -242,13 +276,25 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
     playEmergencyAlertSound();
     setSosSent(true);
 
+    const alertTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const alertData = {
       type: 'SOS_EMERGENCY',
       token,
       name: initialMemberName,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      time: alertTime,
       coords: currentCoords,
+      address: currentAddress,
     };
+
+    // Cross-device push to parent dashboard
+    sendAlert({
+      type: 'SOS_ALERT',
+      token,
+      name: initialMemberName,
+      coords: currentCoords,
+      time: alertTime,
+      address: currentAddress,
+    });
 
     try {
       const channel = new BroadcastChannel('guardiao_family_sync');
@@ -265,13 +311,25 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
     playNotificationChime();
     setCheckInSent(true);
 
+    const checkInTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const checkInData = {
       type: 'CHECK_IN',
       token,
       name: initialMemberName,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      time: checkInTime,
       coords: currentCoords,
+      address: currentAddress,
     };
+
+    // Cross-device push to parent dashboard
+    sendAlert({
+      type: 'CHECK_IN_ALERT',
+      token,
+      name: initialMemberName,
+      coords: currentCoords,
+      time: checkInTime,
+      address: currentAddress,
+    });
 
     try {
       const channel = new BroadcastChannel('guardiao_family_sync');

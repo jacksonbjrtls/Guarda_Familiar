@@ -17,6 +17,7 @@ import { MonitoredDeviceView } from './components/MonitoredDeviceView';
 import { ChildDeviceSimulatorModal } from './components/ChildDeviceSimulatorModal';
 import { AndroidNativeModal } from './components/AndroidNativeModal';
 import { playEmergencyAlertSound, playNotificationChime } from './utils/audio';
+import { connectRealtimeStream, sendCommand } from './services/realtimeSync';
 import { 
   Shield, 
   MapPin, 
@@ -39,6 +40,15 @@ export default function App() {
   });
 
   const [selectedMemberId, setSelectedMemberId] = useState<string>('child-1');
+
+  // Real-time Connected Device Banner Feedback
+  const [connectedDeviceBanner, setConnectedDeviceBanner] = useState<{
+    id: string;
+    name: string;
+    model: string;
+    battery: number;
+    time: string;
+  } | null>(null);
 
   // Alerts State
   const [alerts, setAlerts] = useState<SecurityAlert[]>(() => {
@@ -99,94 +109,460 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // Cross-device synchronization with child's phone
+  // Cross-device synchronization with child's phone via SSE & server API
   useEffect(() => {
-    let channel: BroadcastChannel | null = null;
-    try {
-      channel = new BroadcastChannel('guardiao_family_sync');
-      channel.onmessage = (event) => {
-        const { type, payload } = event.data || {};
-        if (type === 'SOS_ALERT') {
-          playEmergencyAlertSound();
-          showToast(`🚨 ALERTA SOS recebido de ${payload?.name || 'Dependente'}!`);
-          const newAlert: SecurityAlert = {
-            id: `sos-${Date.now()}`,
-            memberId: selectedMemberId,
-            memberName: payload?.name || currentMember.name,
-            timestamp: payload?.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            dateKey: 'Hoje',
-            type: 'SOS',
-            title: `🚨 BOTÃO DE PÂNICO ACIONADO por ${payload?.name || 'Dependente'}!`,
-            description: `O dependente pressionou o botão SOS de emergência na tela do celular. Coordenadas: ${payload?.coords?.lat?.toFixed(4)}, ${payload?.coords?.lng?.toFixed(4)}.`,
-            severity: 'critical',
-            read: false,
+    const unsubscribe = connectRealtimeStream(undefined, (event) => {
+      const { type, payload } = event || {};
+      
+      if (type === 'DEVICE_PAIRED' && payload) {
+        playNotificationChime();
+        showToast(`🟢 Dispositivo conectado instantaneamente: ${payload?.name || 'Dependente'} (${payload?.model || 'Celular'})!`);
+        
+        const fallbackId = payload.token ? `member-qr-${payload.token}` : `member-qr-${Date.now()}`;
+        let finalChosenId = fallbackId;
+
+        // Update or add member with live state
+        setMembers(prevMembers => {
+          const matchIndex = prevMembers.findIndex(m => 
+            (payload.token && (m.id === payload.token || m.id.includes(payload.token))) ||
+            (payload.name && m.name.toLowerCase().trim() === payload.name.toLowerCase().trim()) ||
+            (payload.model && m.device.model === payload.model)
+          );
+
+          if (matchIndex !== -1) {
+            finalChosenId = prevMembers[matchIndex].id;
+            return prevMembers.map((m, idx) => {
+              if (idx !== matchIndex) return m;
+              return {
+                ...m,
+                device: {
+                  ...m.device,
+                  batteryLevel: payload.battery !== undefined ? payload.battery : m.device.batteryLevel,
+                  isCharging: payload.isCharging ?? m.device.isCharging,
+                  model: payload.model || m.device.model,
+                  lastSync: 'Conectado agora em tempo real',
+                },
+                currentLocation: {
+                  ...m.currentLocation,
+                  ...(payload.coords ? { lat: payload.coords.lat, lng: payload.coords.lng } : {}),
+                  address: payload.address || m.currentLocation.address,
+                  lastUpdated: 'Agora mesmo',
+                  statusText: '🟢 Conexão instantânea ao vivo',
+                },
+              };
+            });
+          }
+
+          // Member was not in the list: automatically register them!
+          finalChosenId = fallbackId;
+          const initials = (payload.name || 'Filho')
+            .trim()
+            .split(' ')
+            .slice(0, 2)
+            .map((n: string) => n[0].toUpperCase())
+            .join('') || 'FC';
+
+          const validCoords = payload.coords || { lat: -23.5645, lng: -46.6720 };
+
+          const newMember: FamilyMember = {
+            id: fallbackId,
+            name: payload.name || 'Filho Conectado',
+            role: 'child',
+            relationship: payload.parentesco || 'Filho',
+            age: 12,
+            avatarColor: 'bg-emerald-600',
+            avatarInitials: initials,
+            phone: payload.phone || '',
+            device: {
+              model: payload.model || 'Smartphone Android',
+              batteryLevel: payload.battery !== undefined ? payload.battery : 85,
+              isCharging: payload.isCharging ?? false,
+              networkType: '5G',
+              soundMode: 'Normal',
+              gpsAccuracyMeters: payload.accuracy || 4,
+              lastSync: 'Conectado agora em tempo real via QR Code',
+              isDeviceLocked: false,
+              screenTimeLockActive: false,
+              powerSavingMode: false,
+            },
+            currentLocation: {
+              lat: validCoords.lat,
+              lng: validCoords.lng,
+              address: payload.address || 'Localização GPS em Tempo Real (Aparelho Físico)',
+              speedKmH: 0,
+              currentZoneName: 'Transmitindo ao Vivo',
+              statusText: '🟢 Vinculado via QR Code (Zero Instalação)',
+              lastUpdated: 'Agora mesmo',
+            },
+            safeZones: [
+              {
+                id: `zone-home-${Date.now()}`,
+                name: 'Casa',
+                address: 'Residência da Família',
+                lat: validCoords.lat,
+                lng: validCoords.lng,
+                radiusMeters: 250,
+                color: '#10b981',
+                iconType: 'home',
+                notifyOnEntry: true,
+                notifyOnExit: true,
+              },
+            ],
+            screenTime: {
+              dailyLimitMinutes: 180,
+              usedMinutesToday: 20,
+              downtimeActive: false,
+              downtimeStart: '21:30',
+              downtimeEnd: '06:30',
+              schoolModeActive: true,
+              schoolStart: '07:30',
+              schoolEnd: '12:30',
+            },
+            apps: [
+              { id: '1', name: 'WhatsApp', category: 'Mensagens', icon: 'MessageCircle', usedMinutesToday: 10, isBlocked: false, dailyLimitMinutes: 120 },
+              { id: '2', name: 'YouTube', category: 'Streaming', icon: 'Video', usedMinutesToday: 15, isBlocked: false, dailyLimitMinutes: 60 },
+              { id: '3', name: 'Roblox', category: 'Jogos', icon: 'Gamepad2', usedMinutesToday: 0, isBlocked: false, dailyLimitMinutes: 45 },
+            ],
+            history: [
+              {
+                id: `hist-qr-${Date.now()}`,
+                time: 'Agora mesmo',
+                timestamp: Date.now(),
+                title: 'Ativação Instantânea por QR Code',
+                address: payload.address || 'Transmissão GPS Conectada',
+                lat: validCoords.lat,
+                lng: validCoords.lng,
+                durationMinutes: 1,
+                type: 'stay',
+              },
+            ],
+            audioLogs: [],
           };
-          setAlerts(prev => [newAlert, ...prev]);
-          setIsAlertsOpen(true);
-        } else if (type === 'CHECK_IN_ALERT') {
-          playNotificationChime();
-          showToast(`📍 CHECK-IN: ${payload?.name || 'Dependente'} avisou que chegou bem!`);
-          const newAlert: SecurityAlert = {
-            id: `checkin-${Date.now()}`,
-            memberId: selectedMemberId,
-            memberName: payload?.name || currentMember.name,
-            timestamp: payload?.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            dateKey: 'Hoje',
-            type: 'GEOFENCE_ENTRY',
-            title: `📍 Check-in de Chegada: ${payload?.name || 'Dependente'}`,
-            description: `Aviso confirmado: O dependente tocou em "Cheguei Bem" no celular.`,
-            severity: 'info',
-            read: false,
-          };
-          setAlerts(prev => [newAlert, ...prev]);
-        } else if (type === 'DEVICE_UPDATE' && payload?.coords) {
-          // Real-time GPS and battery live transmission
-          setMembers(prevMembers =>
-            prevMembers.map(m => {
-              const matchesName = m.name.toLowerCase().includes((payload.name || '').toLowerCase());
-              if (matchesName || m.id === selectedMemberId) {
+
+          return [...prevMembers, newMember];
+        });
+
+        // Instantly select this newly registered or updated member and switch to live map!
+        setSelectedMemberId(finalChosenId);
+        setActiveTab('map');
+
+        // Show permanent real-time banner on parent screen
+        setConnectedDeviceBanner({
+          id: finalChosenId,
+          name: payload.name || 'Filho Conectado',
+          model: payload.model || 'Smartphone Android',
+          battery: payload.battery !== undefined ? payload.battery : 85,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        });
+
+        // Record security alert
+        const newAlert: SecurityAlert = {
+          id: `alert-pair-${Date.now()}`,
+          memberId: finalChosenId,
+          memberName: payload?.name || 'Dependente Conectado',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          dateKey: 'Hoje',
+          type: 'GEOFENCE_ENTRY',
+          title: `🟢 Celular Cadastrado e Conectado: ${payload?.name || 'Dependente'}`,
+          description: `O aparelho (${payload?.model || 'Smartphone'}) foi pareado com sucesso via QR Code. GPS ativo com precisão de ±${payload?.accuracy || 4}m e bateria em ${payload?.battery || 85}%.`,
+          severity: 'info',
+          read: false,
+          location: payload?.coords || { lat: -23.5645, lng: -46.6720 },
+        };
+        setAlerts(prev => [newAlert, ...prev]);
+
+      } else if (type === 'INITIAL_STATE' && Array.isArray(payload) && payload.length > 0) {
+        // Sync any active server devices on parent load
+        payload.forEach((srvDevice: any) => {
+          if (!srvDevice) return;
+          setMembers(prevMembers => {
+            const matchIndex = prevMembers.findIndex(m => 
+              (srvDevice.token && (m.id === srvDevice.token || m.id.includes(srvDevice.token))) ||
+              (srvDevice.name && m.name.toLowerCase().trim() === srvDevice.name.toLowerCase().trim())
+            );
+
+            if (matchIndex !== -1) {
+              return prevMembers.map((m, idx) => {
+                if (idx !== matchIndex) return m;
                 return {
                   ...m,
                   device: {
                     ...m.device,
-                    batteryLevel: payload.battery || m.device.batteryLevel,
-                    isCharging: payload.isCharging ?? m.device.isCharging,
-                    model: payload.model || m.device.model,
-                    lastSync: 'Transmitindo agora em tempo real',
+                    batteryLevel: srvDevice.battery !== undefined ? srvDevice.battery : m.device.batteryLevel,
+                    isCharging: srvDevice.isCharging ?? m.device.isCharging,
+                    model: srvDevice.model || m.device.model,
+                    lastSync: 'Ao vivo',
                   },
                   currentLocation: {
                     ...m.currentLocation,
-                    lat: payload.coords.lat,
-                    lng: payload.coords.lng,
-                    address: payload.address || m.currentLocation.address,
-                    lastUpdated: payload.lastSync || 'Agora',
-                    statusText: 'GPS ao vivo transmitido do aparelho',
+                    ...(srvDevice.coords ? { lat: srvDevice.coords.lat, lng: srvDevice.coords.lng } : {}),
+                    address: srvDevice.address || m.currentLocation.address,
+                    lastUpdated: 'Agora mesmo',
+                    statusText: '🟢 Conectado ao vivo',
                   },
                 };
-              }
-              return m;
-            })
+              });
+            }
+
+            // Auto-register server device in family if missing
+            const newId = `member-qr-${srvDevice.token || Date.now()}`;
+            const initials = (srvDevice.name || 'Filho')
+              .trim()
+              .split(' ')
+              .slice(0, 2)
+              .map((n: string) => n[0].toUpperCase())
+              .join('') || 'FC';
+            const validCoords = srvDevice.coords || { lat: -23.5645, lng: -46.6720 };
+
+            const newMember: FamilyMember = {
+              id: newId,
+              name: srvDevice.name || 'Filho Conectado',
+              role: 'child',
+              relationship: srvDevice.parentesco || 'Filho',
+              age: 12,
+              avatarColor: 'bg-emerald-600',
+              avatarInitials: initials,
+              phone: srvDevice.phone || '',
+              device: {
+                model: srvDevice.model || 'Smartphone Android',
+                batteryLevel: srvDevice.battery || 85,
+                isCharging: srvDevice.isCharging ?? false,
+                networkType: '5G',
+                soundMode: 'Normal',
+                gpsAccuracyMeters: srvDevice.accuracy || 4,
+                lastSync: 'Ao vivo',
+                isDeviceLocked: false,
+                screenTimeLockActive: false,
+                powerSavingMode: false,
+              },
+              currentLocation: {
+                lat: validCoords.lat,
+                lng: validCoords.lng,
+                address: srvDevice.address || 'Localização GPS em Tempo Real',
+                speedKmH: 0,
+                currentZoneName: 'Transmitindo ao Vivo',
+                statusText: '🟢 Vinculado via QR Code (Zero Instalação)',
+                lastUpdated: 'Agora mesmo',
+              },
+              safeZones: [
+                {
+                  id: `zone-home-${Date.now()}`,
+                  name: 'Casa',
+                  address: 'Residência da Família',
+                  lat: validCoords.lat,
+                  lng: validCoords.lng,
+                  radiusMeters: 250,
+                  color: '#10b981',
+                  iconType: 'home',
+                  notifyOnEntry: true,
+                  notifyOnExit: true,
+                },
+              ],
+              screenTime: {
+                dailyLimitMinutes: 180,
+                usedMinutesToday: 20,
+                downtimeActive: false,
+                downtimeStart: '21:30',
+                downtimeEnd: '06:30',
+                schoolModeActive: true,
+                schoolStart: '07:30',
+                schoolEnd: '12:30',
+              },
+              apps: [
+                { id: '1', name: 'WhatsApp', category: 'Mensagens', icon: 'MessageCircle', usedMinutesToday: 10, isBlocked: false, dailyLimitMinutes: 120 },
+                { id: '2', name: 'YouTube', category: 'Streaming', icon: 'Video', usedMinutesToday: 15, isBlocked: false, dailyLimitMinutes: 60 },
+                { id: '3', name: 'Roblox', category: 'Jogos', icon: 'Gamepad2', usedMinutesToday: 0, isBlocked: false, dailyLimitMinutes: 45 },
+              ],
+              history: [
+                {
+                  id: `hist-qr-${Date.now()}`,
+                  time: 'Agora mesmo',
+                  timestamp: Date.now(),
+                  title: 'Ativação Instantânea por QR Code',
+                  address: srvDevice.address || 'Transmissão GPS Conectada',
+                  lat: validCoords.lat,
+                  lng: validCoords.lng,
+                  durationMinutes: 1,
+                  type: 'stay',
+                },
+              ],
+              audioLogs: [],
+            };
+
+            return [...prevMembers, newMember];
+          });
+        });
+
+      } else if (type === 'SOS_ALERT') {
+        playEmergencyAlertSound();
+        showToast(`🚨 ALERTA SOS recebido de ${payload?.name || 'Dependente'}!`);
+        const newAlert: SecurityAlert = {
+          id: `sos-${Date.now()}`,
+          memberId: payload?.token || 'alert-sos',
+          memberName: payload?.name || 'Dependente',
+          timestamp: payload?.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          dateKey: 'Hoje',
+          type: 'SOS',
+          title: `🚨 BOTÃO DE PÂNICO ACIONADO por ${payload?.name || 'Dependente'}!`,
+          description: `O dependente pressionou o botão SOS de emergência na tela do celular. Coordenadas: ${payload?.coords?.lat?.toFixed(4)}, ${payload?.coords?.lng?.toFixed(4)}.`,
+          severity: 'critical',
+          read: false,
+        };
+        setAlerts(prev => [newAlert, ...prev]);
+        setIsAlertsOpen(true);
+      } else if (type === 'CHECK_IN_ALERT') {
+        playNotificationChime();
+        showToast(`📍 CHECK-IN: ${payload?.name || 'Dependente'} avisou que chegou bem!`);
+        const newAlert: SecurityAlert = {
+          id: `checkin-${Date.now()}`,
+          memberId: payload?.token || 'alert-checkin',
+          memberName: payload?.name || 'Dependente',
+          timestamp: payload?.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          dateKey: 'Hoje',
+          type: 'GEOFENCE_ENTRY',
+          title: `📍 Check-in de Chegada: ${payload?.name || 'Dependente'}`,
+          description: `Aviso confirmado: O dependente tocou em "Cheguei Bem" no celular.`,
+          severity: 'info',
+          read: false,
+        };
+        setAlerts(prev => [newAlert, ...prev]);
+      } else if (type === 'DEVICE_UPDATE' && payload) {
+        // Real-time GPS and battery live transmission
+        setMembers(prevMembers => {
+          const matchIndex = prevMembers.findIndex(m => 
+            (payload.token && (m.id === payload.token || m.id.includes(payload.token))) ||
+            (payload.name && m.name.toLowerCase().trim() === payload.name.toLowerCase().trim())
           );
-        }
-      };
-    } catch {}
+
+          if (matchIndex !== -1) {
+            return prevMembers.map((m, idx) => {
+              if (idx !== matchIndex) return m;
+              return {
+                ...m,
+                device: {
+                  ...m.device,
+                  batteryLevel: payload.battery !== undefined ? payload.battery : m.device.batteryLevel,
+                  isCharging: payload.isCharging !== undefined ? payload.isCharging : m.device.isCharging,
+                  model: payload.model || m.device.model,
+                  lastSync: 'Transmitindo agora em tempo real',
+                },
+                currentLocation: {
+                  ...m.currentLocation,
+                  ...(payload.coords ? { lat: payload.coords.lat, lng: payload.coords.lng } : {}),
+                  address: payload.address || m.currentLocation.address,
+                  lastUpdated: payload.lastSync || 'Agora (Ao Vivo)',
+                  statusText: 'GPS ao vivo transmitido do aparelho',
+                },
+              };
+            });
+          }
+
+          // If no matching member, auto-register this active transmitting device
+          if (payload.token) {
+            const newId = `member-qr-${payload.token}`;
+            const initials = (payload.name || 'Filho')
+              .trim()
+              .split(' ')
+              .slice(0, 2)
+              .map((n: string) => n[0].toUpperCase())
+              .join('') || 'FC';
+            const validCoords = payload.coords || { lat: -23.5645, lng: -46.6720 };
+
+            const newMember: FamilyMember = {
+              id: newId,
+              name: payload.name || 'Filho Conectado',
+              role: 'child',
+              relationship: payload.parentesco || 'Filho',
+              age: 12,
+              avatarColor: 'bg-emerald-600',
+              avatarInitials: initials,
+              phone: payload.phone || '',
+              device: {
+                model: payload.model || 'Smartphone Android',
+                batteryLevel: payload.battery !== undefined ? payload.battery : 85,
+                isCharging: payload.isCharging ?? false,
+                networkType: '5G',
+                soundMode: 'Normal',
+                gpsAccuracyMeters: payload.accuracy || 4,
+                lastSync: 'Transmitindo agora em tempo real',
+                isDeviceLocked: false,
+                screenTimeLockActive: false,
+                powerSavingMode: false,
+              },
+              currentLocation: {
+                lat: validCoords.lat,
+                lng: validCoords.lng,
+                address: payload.address || 'Localização GPS em Tempo Real',
+                speedKmH: 0,
+                currentZoneName: 'Transmitindo ao Vivo',
+                statusText: '🟢 Vinculado via QR Code (Zero Instalação)',
+                lastUpdated: 'Agora mesmo',
+              },
+              safeZones: [
+                {
+                  id: `zone-home-${Date.now()}`,
+                  name: 'Casa',
+                  address: 'Residência da Família',
+                  lat: validCoords.lat,
+                  lng: validCoords.lng,
+                  radiusMeters: 250,
+                  color: '#10b981',
+                  iconType: 'home',
+                  notifyOnEntry: true,
+                  notifyOnExit: true,
+                },
+              ],
+              screenTime: {
+                dailyLimitMinutes: 180,
+                usedMinutesToday: 20,
+                downtimeActive: false,
+                downtimeStart: '21:30',
+                downtimeEnd: '06:30',
+                schoolModeActive: true,
+                schoolStart: '07:30',
+                schoolEnd: '12:30',
+              },
+              apps: [
+                { id: '1', name: 'WhatsApp', category: 'Mensagens', icon: 'MessageCircle', usedMinutesToday: 10, isBlocked: false, dailyLimitMinutes: 120 },
+                { id: '2', name: 'YouTube', category: 'Streaming', icon: 'Video', usedMinutesToday: 15, isBlocked: false, dailyLimitMinutes: 60 },
+                { id: '3', name: 'Roblox', category: 'Jogos', icon: 'Gamepad2', usedMinutesToday: 0, isBlocked: false, dailyLimitMinutes: 45 },
+              ],
+              history: [
+                {
+                  id: `hist-qr-${Date.now()}`,
+                  time: 'Agora mesmo',
+                  timestamp: Date.now(),
+                  title: 'Ativação Instantânea por QR Code',
+                  address: payload.address || 'Transmissão GPS Conectada',
+                  lat: validCoords.lat,
+                  lng: validCoords.lng,
+                  durationMinutes: 1,
+                  type: 'stay',
+                },
+              ],
+              audioLogs: [],
+            };
+
+            return [...prevMembers, newMember];
+          }
+
+          return prevMembers;
+        });
+      }
+    });
 
     return () => {
-      if (channel) channel.close();
+      unsubscribe();
     };
-  }, [selectedMemberId, currentMember.name]);
+  }, []);
 
   // Trigger Sound Alarm on child's device
   const handleTriggerSoundAlert = () => {
     playEmergencyAlertSound();
     showToast(`Alarme de alta intensidade emitido no aparelho de ${currentMember.name.split(' ')[0]}!`);
 
-    // Broadcast to remote phone
-    try {
-      const channel = new BroadcastChannel('guardiao_family_sync');
-      channel.postMessage({ type: 'PLAY_ALARM' });
-      channel.close();
-    } catch {}
+    // Broadcast across devices via realtime server and local channel
+    sendCommand('PLAY_ALARM', { memberId: currentMember.id });
 
     const newAlert: SecurityAlert = {
       id: `alert-ring-${Date.now()}`,
@@ -490,14 +866,33 @@ export default function App() {
   };
 
   const handleMemberPairedFromQR = (newMember: FamilyMember) => {
-    setMembers(prev => [...prev, newMember]);
-    setSelectedMemberId(newMember.id);
+    let finalId = newMember.id;
+    setMembers(prev => {
+      const matchIndex = prev.findIndex(m => 
+        m.id === newMember.id || 
+        (newMember.id && m.id.includes(newMember.id)) ||
+        (newMember.name && m.name.toLowerCase().trim() === newMember.name.toLowerCase().trim())
+      );
+      if (matchIndex !== -1) {
+        finalId = prev[matchIndex].id;
+        return prev.map((m, idx) => idx === matchIndex ? { ...m, ...newMember, id: m.id } : m);
+      }
+      return [...prev, newMember];
+    });
+    setSelectedMemberId(finalId);
     setActiveTab('map');
-    showToast(`Celular de ${newMember.name} pareado e ativado com sucesso via QR Code!`);
+    setConnectedDeviceBanner({
+      id: finalId,
+      name: newMember.name,
+      model: newMember.device.model,
+      battery: newMember.device.batteryLevel,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
+    showToast(`🟢 Celular de ${newMember.name} pareado e ativo no mapa!`);
 
     const alert: SecurityAlert = {
       id: `alert-qr-${Date.now()}`,
-      memberId: newMember.id,
+      memberId: finalId,
       memberName: newMember.name,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       dateKey: 'Hoje',
@@ -623,6 +1018,51 @@ export default function App() {
           </button>
         </div>
 
+        {/* Real-time Connected Device Alert Banner */}
+        {connectedDeviceBanner && (
+          <div className="bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white px-3.5 py-2.5 mx-3 mt-2 rounded-2xl shadow-lg border border-emerald-400/50 flex items-center justify-between gap-2.5 animate-in fade-in slide-in-from-top-2 shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-white/20 backdrop-blur-xs flex items-center justify-center shrink-0">
+                <Smartphone className="w-4 h-4 text-white" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-extrabold text-[11px] tracking-wide text-emerald-100">
+                    🟢 APARELHO CADASTRADO E AO VIVO!
+                  </span>
+                  <span className="text-[9px] bg-emerald-950/40 text-emerald-200 px-1.5 py-0.5 rounded-full font-mono">
+                    {connectedDeviceBanner.battery}% BAT
+                  </span>
+                </div>
+                <p className="text-[11px] font-semibold text-white truncate">
+                  <strong>{connectedDeviceBanner.name}</strong> ({connectedDeviceBanner.model})
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedMemberId(connectedDeviceBanner.id);
+                  setActiveTab('map');
+                  setConnectedDeviceBanner(null);
+                }}
+                className="px-2.5 py-1 bg-white hover:bg-emerald-50 text-emerald-800 text-[11px] font-bold rounded-lg shadow-xs transition-colors whitespace-nowrap"
+              >
+                Ver no Mapa
+              </button>
+              <button
+                type="button"
+                onClick={() => setConnectedDeviceBanner(null)}
+                className="p-1 text-emerald-200 hover:text-white"
+                title="Fechar aviso"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Mobile Scrollable Body Content */}
         <main className="flex-1 px-3.5 py-3 space-y-3.5 pb-28">
           {/* Family Member Switcher Bar (Mobile Horizontal Carousel) */}
@@ -745,6 +1185,15 @@ export default function App() {
                   if (show) setActiveTab('map');
                 }}
                 showFullDayRoute={showFullDayRoute}
+                onGoToLiveMapWithPoint={(lat, lng) => {
+                  const matchedIdx = currentMember.history.findIndex(
+                    h => Math.abs(h.lat - lat) < 0.002 && Math.abs(h.lng - lng) < 0.002
+                  );
+                  if (matchedIdx !== -1) {
+                    setSelectedHistoryIndex(matchedIdx);
+                  }
+                  setActiveTab('map');
+                }}
               />
             </div>
           )}

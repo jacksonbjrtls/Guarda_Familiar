@@ -17,10 +17,12 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
-  Sparkles
+  Sparkles,
+  Flame
 } from 'lucide-react';
 import { playNotificationChime } from '../utils/audio';
 import { reverseGeocodeCoordinates } from '../utils/geolocation';
+import { aggregateHeatmapHotspots, formatMinutesHuman } from '../utils/heatmapUtils';
 
 interface MapTrackerProps {
   currentMember: FamilyMember;
@@ -29,6 +31,7 @@ interface MapTrackerProps {
   onAddNewSafeZoneAtLocation?: (lat: number, lng: number) => void;
   selectedHistoryIndex?: number | null;
   showFullDayRoute?: boolean;
+  showHeatmapOverlay?: boolean;
 }
 
 export const MapTracker: React.FC<MapTrackerProps> = ({
@@ -38,6 +41,7 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
   onAddNewSafeZoneAtLocation,
   selectedHistoryIndex,
   showFullDayRoute = false,
+  showHeatmapOverlay = false,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -45,10 +49,12 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
   const zonesLayerRef = useRef<L.LayerGroup | null>(null);
   const routePolylineRef = useRef<L.Polyline | null>(null);
   const historyMarkersLayerRef = useRef<L.LayerGroup | null>(null);
+  const heatmapLayerRef = useRef<L.LayerGroup | null>(null);
   const accuracyCircleRef = useRef<L.Circle | null>(null);
   const gpsWatchIdRef = useRef<number | null>(null);
 
   const [mapStyle, setMapStyle] = useState<'streets' | 'satellite'>('streets');
+  const [showHeatmap, setShowHeatmap] = useState<boolean>(showHeatmapOverlay);
   const [isSimulatingMove, setIsSimulatingMove] = useState(false);
   const simulationStepRef = useRef(0);
   const simulationIntervalRef = useRef<number | null>(null);
@@ -111,6 +117,7 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
       mapInstanceRef.current = map;
       zonesLayerRef.current = L.layerGroup().addTo(map);
       historyMarkersLayerRef.current = L.layerGroup().addTo(map);
+      heatmapLayerRef.current = L.layerGroup().addTo(map);
     }
   }, []);
 
@@ -373,6 +380,96 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
     }
   }, [showFullDayRoute, currentMember.history]);
 
+  // Heatmap Overlay Layer
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const heatmapGroup = heatmapLayerRef.current;
+    if (!map || !heatmapGroup) return;
+
+    heatmapGroup.clearLayers();
+
+    if (showHeatmap && currentMember.history.length > 0) {
+      const hotspots = aggregateHeatmapHotspots(currentMember.history);
+
+      hotspots.forEach((spot, idx) => {
+        const factor = Math.min(2.0, Math.max(0.65, spot.totalMinutes / 120));
+        const baseRadius = 200 * factor;
+
+        let outerColor = '#fef08a';
+        let midColor = '#fbbf24';
+        let coreColor = '#ef4444';
+
+        if (spot.intensityLevel === 'critical') {
+          outerColor = '#fca5a5';
+          midColor = '#f97316';
+          coreColor = '#dc2626';
+        } else if (spot.intensityLevel === 'high') {
+          outerColor = '#fed7aa';
+          midColor = '#f97316';
+          coreColor = '#ea580c';
+        } else if (spot.intensityLevel === 'medium') {
+          outerColor = '#fef08a';
+          midColor = '#eab308';
+          coreColor = '#ca8a04';
+        } else {
+          outerColor = '#a7f3d0';
+          midColor = '#10b981';
+          coreColor = '#059669';
+        }
+
+        const outerCircle = L.circle([spot.lat, spot.lng], {
+          radius: baseRadius * 1.5,
+          color: 'transparent',
+          fillColor: outerColor,
+          fillOpacity: 0.24,
+          weight: 0,
+        });
+
+        const midCircle = L.circle([spot.lat, spot.lng], {
+          radius: baseRadius,
+          color: midColor,
+          fillColor: midColor,
+          fillOpacity: 0.35,
+          weight: 1,
+          dashArray: '3, 6',
+        });
+
+        const coreCircle = L.circle([spot.lat, spot.lng], {
+          radius: baseRadius * 0.45,
+          color: coreColor,
+          fillColor: coreColor,
+          fillOpacity: 0.6,
+          weight: 2,
+        });
+
+        const timeFormatted = formatMinutesHuman(spot.totalMinutes);
+        const labelIcon = L.divIcon({
+          className: 'heatmap-live-pin',
+          html: `
+            <div style="transform: translate(-50%, -50%); display: flex; align-items: center; gap: 4px; background: rgba(15, 23, 42, 0.94); color: #ffffff; border: 1.5px solid ${coreColor}; padding: 2px 7px; border-radius: 9999px; font-size: 10px; font-weight: 700; box-shadow: 0 4px 10px rgba(0,0,0,0.25); white-space: nowrap;">
+              <span style="display: inline-block; width: 6px; height: 6px; border-radius: 9999px; background: ${coreColor};"></span>
+              <span>${spot.name.split(' ')[0]}</span>
+              <span style="color: #f97316; font-family: monospace;">${timeFormatted}</span>
+            </div>
+          `,
+          iconSize: [0, 0],
+        });
+
+        const labelMarker = L.marker([spot.lat, spot.lng], { icon: labelIcon });
+        labelMarker.bindTooltip(`
+          <strong>${spot.name}</strong><br/>
+          Permanência total: <strong>${timeFormatted}</strong> (${spot.percentOfDay}% do dia)<br/>
+          ${spot.address}
+        `);
+
+        heatmapGroup.addLayer(outerCircle);
+        heatmapGroup.addLayer(midCircle);
+        heatmapGroup.addLayer(coreCircle);
+        heatmapGroup.addLayer(labelMarker);
+      });
+    }
+  }, [showHeatmap, currentMember.history]);
+
   // Center on selected history index if specified
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -467,6 +564,22 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
           </button>
         ) : null}
 
+        {/* Active Heatmap Overlay Banner */}
+        {showHeatmap && (
+          <div className="pointer-events-auto bg-gradient-to-r from-orange-600 to-amber-600 text-white px-3 py-1.5 rounded-xl text-xs font-semibold shadow-lg flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 truncate">
+              <Flame className="w-4 h-4 text-amber-200 shrink-0" />
+              <span className="truncate">Camada de Calor Ativa (Permanência em Locais)</span>
+            </div>
+            <button
+              onClick={() => setShowHeatmap(false)}
+              className="bg-black/20 hover:bg-black/30 px-2 py-0.5 rounded-lg text-[10px] shrink-0 font-medium"
+            >
+              Desativar
+            </button>
+          </div>
+        )}
+
         {/* Adding Safe Zone banner indicator */}
         {isAddingZoneMode && (
           <div className="pointer-events-auto bg-indigo-600 text-white px-3 py-2 rounded-xl text-xs font-semibold shadow-lg flex items-center justify-between gap-2">
@@ -494,6 +607,20 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
           aria-label="Alternar camada do mapa"
         >
           <Layers className="w-4 h-4 text-slate-600" />
+        </button>
+
+        {/* Heatmap Overlay Toggle Button */}
+        <button
+          onClick={() => setShowHeatmap(prev => !prev)}
+          className={`w-10 h-10 rounded-xl shadow-md border flex items-center justify-center transition-all active:scale-95 ${
+            showHeatmap
+              ? 'bg-orange-50 text-orange-600 border-orange-300 ring-2 ring-orange-400/40'
+              : 'bg-white/95 text-slate-700 border-slate-200/90 hover:bg-slate-50'
+          }`}
+          title={showHeatmap ? 'Ocultar mapa de calor' : 'Ativar mapa de calor de atividade'}
+          aria-label="Alternar mapa de calor de atividade"
+        >
+          <Flame className={`w-5 h-5 ${showHeatmap ? 'text-orange-600 fill-orange-500/20' : 'text-slate-600'}`} />
         </button>
 
         {/* Real Device GPS Quick Capture Button */}
