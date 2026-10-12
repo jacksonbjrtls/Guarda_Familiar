@@ -60,6 +60,7 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
   const [pwaInstalled, setPwaInstalled] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [wakeLockActive, setWakeLockActive] = useState(false);
+  const [showPwaGuide, setShowPwaGuide] = useState(false);
 
   // Auto-detect Device Model & Battery on mount
   useEffect(() => {
@@ -299,7 +300,7 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
       }
       setDeferredPrompt(null);
     } else {
-      alert('Para fixar no celular:\n1. Toque nos 3 pontinhos do Chrome (⋮) no canto superior.\n2. Escolha "Adicionar à tela inicial" ou "Instalar aplicativo".');
+      setShowPwaGuide(true);
     }
   };
 
@@ -319,6 +320,59 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
           >
             Silenciar Alarme
           </button>
+        </div>
+      )}
+
+      {/* Guide for Installing / Pinning to Phone Screen */}
+      {showPwaGuide && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-3xl p-5 max-w-sm w-full text-slate-100 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Smartphone className="w-5 h-5 text-indigo-400" />
+                <h3 className="font-bold text-sm text-white">Como Fixar no Celular</h3>
+              </div>
+              <button
+                onClick={() => setShowPwaGuide(false)}
+                className="w-7 h-7 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center text-xs font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-300">
+              <div className="flex items-start gap-2.5 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[11px] font-bold shrink-0">1</span>
+                <div>
+                  <strong className="text-white block">No Chrome (Android):</strong>
+                  Toque nos <strong>três pontinhos (⋮)</strong> no canto superior direito do navegador.
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[11px] font-bold shrink-0">2</span>
+                <div>
+                  <strong className="text-white block">Escolha a opção:</strong>
+                  Toque em <strong>"Adicionar à tela inicial"</strong> ou <strong>"Instalar aplicativo"</strong>.
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[11px] font-bold shrink-0">3</span>
+                <div>
+                  <strong className="text-white block">No Safari (iPhone):</strong>
+                  Toque no botão de <strong>Compartilhar (quadrado com seta para cima)</strong> e escolha <strong>"Adicionar à Tela de Início"</strong>.
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setShowPwaGuide(false)}
+              className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-colors shadow-md"
+            >
+              Entendi, obrigado!
+            </button>
+          </div>
         </div>
       )}
 
@@ -345,25 +399,36 @@ export const MonitoredDeviceView: React.FC<MonitoredDeviceViewProps> = ({
         </div>
 
         {/* Pairing Identity Banner */}
-        <div className="flex items-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-600/30 text-white ring-2 ring-indigo-400/30">
-            <ShieldCheck className="w-7 h-7" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800 flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                Proteção Ativa
-              </span>
-              <span className="text-[10px] text-slate-400 font-mono">Token: {token}</span>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-600/30 text-white ring-2 ring-indigo-400/30 shrink-0">
+              <ShieldCheck className="w-7 h-7" />
             </div>
-            <h1 className="text-lg font-bold text-white tracking-tight leading-tight">
-              {initialMemberName}
-            </h1>
-            <p className="text-xs text-indigo-300">
-              Dispositivo Vinculado • {initialRelationship}
-            </p>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  Proteção Ativa
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono truncate">Token: {token}</span>
+              </div>
+              <h1 className="text-lg font-bold text-white tracking-tight leading-tight truncate">
+                {initialMemberName}
+              </h1>
+              <p className="text-xs text-indigo-300 truncate">
+                Dispositivo Vinculado • {initialRelationship}
+              </p>
+            </div>
           </div>
+
+          <button
+            onClick={onSwitchToAdmin}
+            className="px-3 py-2 bg-indigo-900/60 hover:bg-indigo-800 text-indigo-200 hover:text-white rounded-xl border border-indigo-700/60 text-xs font-semibold shrink-0 flex items-center gap-1.5 transition-colors shadow-xs"
+            title="Abrir Painel do Administrador (Pai)"
+          >
+            <Shield className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Painel Pai</span>
+          </button>
         </div>
       </header>
 

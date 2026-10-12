@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { INITIAL_MEMBERS, INITIAL_ALERTS } from './data/initialData';
 import { FamilyMember, SecurityAlert, SafeZone, Coordinates, AudioSessionLog } from './types';
 import { Navigation } from './components/Navigation';
@@ -204,7 +204,7 @@ export default function App() {
   };
 
   // Real-time location simulation update
-  const handleLocationUpdate = (coords: Coordinates, address: string, speedKmH: number) => {
+  const handleLocationUpdate = useCallback((coords: Coordinates, address: string, speedKmH: number) => {
     setMembers(prevMembers =>
       prevMembers.map(m => {
         if (m.id !== currentMember.id) return m;
@@ -268,7 +268,7 @@ export default function App() {
         };
       })
     );
-  };
+  }, [currentMember.id, currentMember.name]);
 
   // Add Safe Zone
   const handleAddSafeZone = (zoneData: Omit<SafeZone, 'id'>) => {
@@ -606,6 +606,22 @@ export default function App() {
             <button onClick={() => setToastMessage(null)} className="text-slate-400 hover:text-white shrink-0 p-1">✕</button>
           </div>
         )}
+
+        {/* Mobile Quick Mode Bar: Shows current device mode and allows 1-tap switch */}
+        <div className="bg-indigo-50/90 border-b border-indigo-100/90 px-3.5 py-1.5 flex items-center justify-between text-[11px] shrink-0">
+          <div className="flex items-center gap-1.5 text-indigo-950 font-bold">
+            <Shield className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Painel do Administrador (Pai)</span>
+          </div>
+          <button
+            onClick={() => setIsMonitoredMode(true)}
+            className="text-[10px] font-bold text-indigo-700 hover:text-indigo-900 bg-white hover:bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-200 shadow-2xs flex items-center gap-1 transition-colors"
+            title="Mudar para tela do celular monitorado"
+          >
+            <Smartphone className="w-3 h-3 text-emerald-600" />
+            <span>Ver Modo Celular Filho</span>
+          </button>
+        </div>
 
         {/* Mobile Scrollable Body Content */}
         <main className="flex-1 px-3.5 py-3 space-y-3.5 pb-28">

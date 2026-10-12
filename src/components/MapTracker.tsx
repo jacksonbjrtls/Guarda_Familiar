@@ -61,6 +61,14 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
   const [gpsAddress, setGpsAddress] = useState<string | null>(null);
   const [isTrackingLive, setIsTrackingLive] = useState<boolean>(true);
 
+  // Stable ref to onLocationUpdate to prevent re-triggering GPS effects
+  const onLocationUpdateRef = useRef(onLocationUpdate);
+  useEffect(() => {
+    onLocationUpdateRef.current = onLocationUpdate;
+  });
+  const hasInitialCenteredRef = useRef(false);
+  const lastGeocodeTimeRef = useRef(0);
+
   // Simulation waypoint path from School back to Home via Paulista and Rebouças
   const simulationPath = [
     { lat: -23.5614, lng: -46.6622, address: 'Alameda Jaú, 1120 (Na Escola)', speed: 0 },
@@ -132,7 +140,7 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
 
   // Activate real device GPS and track location automatically
   const activateDeviceGps = useCallback((forceCenter: boolean = true) => {
-    if (!navigator.geolocation) {
+    if (typeof window === 'undefined' || !navigator.geolocation) {
       setUserGpsStatus('denied');
       return;
     }
@@ -150,7 +158,8 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
       setUserGpsStatus('active');
 
       const map = mapInstanceRef.current;
-      if (map && forceCenter) {
+      if (map && (forceCenter || !hasInitialCenteredRef.current)) {
+        hasInitialCenteredRef.current = true;
         map.flyTo([lat, lng], 16, { duration: 1.2 });
       }
 
@@ -171,17 +180,22 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
         }
       }
 
-      // Reverse geocode to exact street and city
-      const resolvedAddress = await reverseGeocodeCoordinates(lat, lng);
-      setGpsAddress(resolvedAddress);
+      // Reverse geocode to exact street with throttling to prevent rate limit
+      const now = Date.now();
+      let resolvedAddress = gpsAddress || currentMember.currentLocation.address;
+      if (now - lastGeocodeTimeRef.current > 12000 || !gpsAddress) {
+        lastGeocodeTimeRef.current = now;
+        resolvedAddress = await reverseGeocodeCoordinates(lat, lng);
+        setGpsAddress(resolvedAddress);
+      }
 
-      if (onLocationUpdate) {
-        onLocationUpdate({ lat, lng }, resolvedAddress, speedKmH);
+      if (onLocationUpdateRef.current) {
+        onLocationUpdateRef.current({ lat, lng }, resolvedAddress, speedKmH);
       }
     };
 
     const handlePosError = (err: GeolocationPositionError) => {
-      console.warn('Erro ao obter GPS do celular:', err.message);
+      console.warn('Aviso GPS do celular:', err.message);
       if (err.code === err.PERMISSION_DENIED) {
         setUserGpsStatus('denied');
       } else {
@@ -205,7 +219,7 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
       timeout: 15000,
       maximumAge: 4000,
     });
-  }, [onLocationUpdate]);
+  }, [currentMember.currentLocation.address, gpsAddress]);
 
   // Auto-activate GPS when component mounts
   useEffect(() => {
@@ -221,7 +235,7 @@ export const MapTracker: React.FC<MapTrackerProps> = ({
         accuracyCircleRef.current = null;
       }
     };
-  }, [activateDeviceGps]);
+  }, []);
 
   // Update Child Marker
   useEffect(() => {

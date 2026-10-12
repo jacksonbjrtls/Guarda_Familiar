@@ -47,6 +47,7 @@ export const QRCodePairingModal: React.FC<QRCodePairingModalProps> = ({
   const [phoneNumber, setPhoneNumber] = useState('(11) 98765-4321');
   const [selectedDevicePreset, setSelectedDevicePreset] = useState('Samsung Galaxy A54 5G');
   const [activeTab, setActiveTab] = useState<'qrcode' | 'explanation'>('qrcode');
+  const [usePublicUrl, setUsePublicUrl] = useState(true);
 
   // Simulation steps state
   const [isSimulatingScan, setIsSimulatingScan] = useState(false);
@@ -60,8 +61,15 @@ export const QRCodePairingModal: React.FC<QRCodePairingModalProps> = ({
   } | null>(null);
 
   // Link for the child device to open when scanning the QR code
+  // If running in development (ais-dev-), automatically use the shared published URL (ais-pre-)
+  // so external phones can open it directly without needing Google Cloud / AI Studio login credentials.
   const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://guardiao-familiar.app';
-  const pairingUrl = `${currentOrigin}/?conectar=1&token=${pairingToken}&nome=${encodeURIComponent(childName)}&parentesco=${encodeURIComponent(relationship)}&tel=${encodeURIComponent(phoneNumber)}`;
+  const publicOrigin = currentOrigin.includes('ais-dev-')
+    ? currentOrigin.replace('ais-dev-', 'ais-pre-')
+    : currentOrigin;
+
+  const targetOrigin = usePublicUrl ? publicOrigin : currentOrigin;
+  const pairingUrl = `${targetOrigin}/?conectar=1&token=${pairingToken}&nome=${encodeURIComponent(childName)}&parentesco=${encodeURIComponent(relationship)}&tel=${encodeURIComponent(phoneNumber)}`;
 
   // Listen for live pairing from real mobile device via BroadcastChannel or Storage
   useEffect(() => {
@@ -520,6 +528,36 @@ export const QRCodePairingModal: React.FC<QRCodePairingModalProps> = ({
 
                 <div className="flex items-center justify-center gap-1.5 text-xs text-indigo-900 font-mono font-bold bg-indigo-50 px-3 py-1 rounded-full border border-indigo-200">
                   <span>Token: {pairingToken}</span>
+                </div>
+
+                {/* Direct Link Preview & Copy */}
+                <div className="mt-2.5 w-full text-left bg-white/90 p-2.5 rounded-xl border border-indigo-100 space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-slate-700">
+                    <span>Link Direto para o Celular:</span>
+                    {currentOrigin.includes('ais-dev-') && (
+                      <button
+                        type="button"
+                        onClick={() => setUsePublicUrl(!usePublicUrl)}
+                        className="text-[10px] text-indigo-600 font-bold hover:underline"
+                      >
+                        {usePublicUrl ? 'Mudar p/ Dev' : 'Mudar p/ Público (pre)'}
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 bg-slate-50 px-2 py-1.5 rounded-lg border border-slate-200 text-[10px] font-mono text-slate-600">
+                    <span className="truncate flex-1 select-all">{pairingUrl}</span>
+                    <button
+                      type="button"
+                      onClick={handleCopyLink}
+                      className="px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-sans font-bold text-[10px] shrink-0 flex items-center gap-1 shadow-2xs"
+                    >
+                      {copiedLink ? <Check className="w-2.5 h-2.5" /> : <Copy className="w-2.5 h-2.5" />}
+                      <span>{copiedLink ? 'Copiado!' : 'Copiar'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-tight">
+                    💡 Se a câmera do celular não ler ou der erro de acesso, você pode enviar esse link pelo WhatsApp ou colar direto no navegador do celular.
+                  </p>
                 </div>
 
                 <p className="text-[11px] text-slate-600 mt-2 font-medium">
